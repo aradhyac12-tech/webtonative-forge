@@ -1,49 +1,79 @@
+## Scope
 
-## What the upload actually is
+Extend APKForge with two capabilities:
+1. **iOS builds via Codemagic** (shared workspace account, App Store Connect API key signing)
+2. **Auto-Capacitor injection** for web-ish zips that don't already have Capacitor
 
-`apk-ipa-pal-main.zip` is already a complete Lovable TanStack Start builder app. It ships:
+## Part 1 — Auto-Capacitor injection (runs before dispatch)
 
-- Auth-gated routes: `dashboard`, `new-build`, `build/$id`, `settings`
-- Server logic: `pipeline.functions.ts`, `github.server.ts`, `codemagic.server.ts`, `android-workflow.ts`, `ios-workflow.ts`, `validate-zip.ts`
-- Supabase migrations (3 files) for builds/users/etc.
-- Lovable Cloud auth integration (`@lovable.dev/cloud-auth-js`)
+Extend `src/lib/validate-zip.ts` project detection to classify the zip into one of:
 
-So the "build the universal builder" work is largely already done in the upload — I just need to land it in this project and make it run.
+- `capacitor-full` — has `capacitor.config.*` + `android/` and/or `ios/` (today's happy path, unchanged)
+- `capacitor-partial` — has `capacitor.config.*` but missing the target platform folder → run `npx cap add <platform>` in the workflow
+- `web-app` — no Capacitor, but detectable web project. Detection order:
+  1. Static: has `index.html` at root or in `dist/`/`build/`/`public/` with no `package.json` → treat pre-built
+  2. Vite/CRA/Next-export/Vue/Svelte: has `package.json` with a `build` script and one of `vite`, `react-scripts`, `@angular/cli`, `vue`, `svelte`, `next` in deps → run its build, then inject
+  3. Plain `package.json` with `build` script → attempt build, treat `dist`/`build`/`out`/`www` as web root (first one found)
+- `reject` — React Native (`ios/*.xcodeproj` + `Podfile` + no Capacitor), Flutter (`pubspec.yaml`), native-only, or nothing detectable
 
-## Plan
+For `web-app` and `capacitor-partial`, the CI workflow does the injection (not the browser) — keeps zip small and lets `npm ci` resolve deps:
 
-### 1. Replace scaffold with uploaded project
-- Delete the current placeholder `src/` and root config (`package.json`, `vite.config.ts`, `tsconfig.json`, `components.json`, `bunfig.toml`, `eslint.config.js`, `bun.lock`).
-- Copy `apk-ipa-pal-main/*` into project root (excluding any `.git`, `node_modules`, `AGENTS.md` conflicts — keep current `AGENTS.md`).
-- Copy `public/` assets.
+```bash
+# Injection steps baked into workflows
+npm ci || npm install
+[ -f capacitor.config.* ] || npx -y @capacitor/cli@latest init "$APP_NAME" "$BUNDLE_ID" --web-dir="$WEB_DIR"
+npm i -D @capacitor/cli
+npm i @capacitor/core @capacitor/<android|ios>
+[ -d <platform> ] || npx cap add <platform>
+npm run build || true   # only if package.json has build script
+npx cap sync <platform>
+```
 
-### 2. Install dependencies
-- Run `bun install` so the new `package.json` (with jszip, supabase-js, tweetnacl, etc.) resolves.
+Store detection result + inferred `web_dir`, `app_name`, `bundle_id` on the `builds` row so the workflow reads them as inputs.
 
-### 3. Enable Lovable Cloud + apply migrations
-- Call `supabase--enable`.
-- Apply the 3 migrations from `supabase/migrations/` to create the builds/users schema.
+## Part 2 — iOS via Codemagic (shared account)
 
-### 4. Configure secrets for CI dispatch
-Ask user (after plan) to supply, via `add_secret`:
-- `GITHUB_TOKEN` — PAT with `repo` + `workflow` scope (Android AAB/APK via GitHub Actions ubuntu-latest, iOS IPA via macos-latest).
-- `GITHUB_OWNER`, `GITHUB_REPO` — target repo for workflow dispatches.
-- `CODEMAGIC_API_TOKEN` — for iOS signing / Apple Developer flows.
-- Optional: `APPLE_TEAM_ID`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `IOS_P12_BASE64`, `IOS_P12_PASSWORD`, `IOS_PROVISIONING_PROFILE_BASE64` — passed through to build workflows.
+### Secrets (workspace-level, one-time)
+- `CODEMAGIC_API_TOKEN` — shared Codemagic personal access token
+- `CODEMAGIC_APP_ID` — the Codemagic app registered against the shared `apkforge-builds` GitHub repo
+- `APP_STORE_CONNECT_ISSUER_ID`
+- `APP_STORE_CONNECT_KEY_ID`
+- `APP_STORE_CONNECT_PRIVATE_KEY` — .p8 contents
 
-Skip any that are already present; don't block on optional signing secrets (unsigned debug APK path stays available).
+I'll request these via `add_secret` once the code is in place.
 
-### 5. Verify the preview works
-- Confirm `bun install` succeeded, dev server boots, `/auth` and `/dashboard` render, and a smoke `new-build` upload validates a zip via `validate-zip.ts` without touching real CI.
-- Fix any import / typecheck breakage introduced by version drift between the upload's `package.json` and the current template.
+### New files
+- `src/lib/ios-workflow.ts` — `codemagic.yaml` template with an `ios-signed-release` workflow using `app-store-connect` integration and automatic code signing (bundle ID from build row)
+- `src/lib/codemagic.server.ts` — thin REST client: `POST /builds` to trigger, `GET /builds/:id` to poll, `GET /builds/:id/artifacts/:artifactId` for the IPA
+- Extend `src/lib/pipeline.functions.ts`:
+  - `dispatchBuild` branches on `build.platform`: Android → GitHub Actions (today); iOS → push same source to same repo, then Codemagic `POST /builds` with `workflowId: ios-signed-release`, `branch: build/<id>`
+  - `refreshBuildStatus` branches: iOS uses Codemagic status endpoints; on success pulls IPA and stores at `build-artifacts/<user>/<id>.ipa`
 
-### 6. What I will NOT change
-- Won't rewrite `pipeline.functions.ts`, `github.server.ts`, `codemagic.server.ts`, or the workflow YAML generators — the upload already implements the "detect Capacitor / generate native config / dispatch build / poll artifacts" pipeline. If something is broken after boot, fix in place.
-- Won't add Xcode/Android SDK to this sandbox — real compilation runs on the external CI runners (GitHub Actions macOS/ubuntu + Codemagic), which is the only way to produce real APK/AAB/IPA. This project is the dispatcher + dashboard.
+### DB
+Migration to add `codemagic_build_id` (text, nullable) to `builds`. No new tables; Apple creds are workspace secrets, not per-user.
+
+## Part 3 — UI
+
+- `/new-build`: platform toggle (Android / iOS). Bundle ID field becomes required for iOS. Show a warning strip when detection returns `web-app` explaining "we'll add Capacitor for you in the cloud build."
+- `/build/$id`: stage labels adapt per provider (Codemagic stages: "Provisioning → Building → Signing → Publishing")
+- `/settings`: iOS section is workspace-managed — show "iOS signing configured by workspace admin" or "iOS signing not yet configured" based on whether the workspace secrets exist (via a small server fn that only returns booleans)
 
 ## Technical notes
 
-- The upload uses `@lovable.dev/vite-tanstack-config` 2.7.1 and `vite ^8` — same family as the current template, so should slot in cleanly. If lockfile conflicts, delete `bun.lock` and reinstall.
-- `nitro` is a devDependency; safe on the Cloudflare Worker runtime because it isn't imported at runtime.
-- Capacitor CLI is not installed here; native project generation happens inside the CI workflows the app dispatches, not in this sandbox. That matches the "no Android Studio / Xcode required by end user" requirement — the runners do it.
-- If a required capability truly needs local native compilation (e.g. producing an IPA without any macOS runner), that's not possible from a web sandbox and I'll surface it as a hard error in the build status UI rather than pretend it worked.
+- **Codemagic auth**: `x-auth-token: <CODEMAGIC_API_TOKEN>` header on all requests to `https://api.codemagic.io`
+- **Signing**: Codemagic's `app-store-connect` integration + `automatic_code_signing: true` in `codemagic.yaml` provisions certs/profiles from the App Store Connect key at build time — no manual .p12/.mobileprovision handling
+- **Failure surfacing**: Codemagic returns structured `buildActions[]` with logs URLs; store the last failing action's tail in `build_logs` just like GitHub Actions today
+- **Rate limits**: Codemagic API is 100 req/min per token — 5s polling matches the Android side fine
+- **Rejection UX**: `validate-zip.ts` returns `{ok:false, reason}` for RN/Flutter/native/empty; `/new-build` shows the reason instead of uploading
+
+## Out of scope (still)
+
+Push notifications, cert expiry preflight, TestFlight upload, per-user Codemagic accounts, iOS simulator/unsigned builds.
+
+## Order of implementation
+
+1. Zip detection + `web-app`/`capacitor-partial` classification
+2. Android workflow updated to run injection when needed (proves the injection path on the cheap side first)
+3. `codemagic.yaml` + Codemagic REST client + iOS branch in `dispatchBuild`/`refreshBuildStatus`
+4. UI: platform toggle, detection warnings, settings visibility
+5. Request workspace secrets, wire them up, smoke test one iOS build
