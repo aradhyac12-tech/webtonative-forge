@@ -89,6 +89,8 @@ async function dispatchAndroid(
   await putSecret(g, ANDROID_REPO_NAME, "APKFORGE_KEY_PASSWORD", ks.key_password);
   await putSecret(g, ANDROID_REPO_NAME, "APKFORGE_KEY_ALIAS", ks.key_alias);
 
+  const logoUrl = await signLogoUrl(supabase, build.logo_path);
+
   await dispatchWorkflow(g, ANDROID_REPO_NAME, ANDROID_WORKFLOW_FILENAME, {
     build_id: build.id,
     source_url: signed.signedUrl,
@@ -96,6 +98,7 @@ async function dispatchAndroid(
     app_name: build.app_name ?? "App",
     bundle_id: build.bundle_id ?? "com.apkforge.app",
     web_dir: build.web_dir ?? "www",
+    logo_url: logoUrl,
   });
 
   const runId = await findRunForBuild(g, ANDROID_REPO_NAME, ANDROID_WORKFLOW_FILENAME, build.id);
