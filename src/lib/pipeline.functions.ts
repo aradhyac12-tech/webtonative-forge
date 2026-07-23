@@ -12,13 +12,21 @@ async function loadBuild(supabase: any, userId: string, buildId: string) {
   const { data, error } = await supabase
     .from("builds")
     .select(
-      "id, user_id, status, platform, artifact_path, keystore_id, repo, github_run_id, codemagic_build_id, project_kind, app_name, bundle_id, web_dir",
+      "id, user_id, status, platform, artifact_path, keystore_id, repo, github_run_id, codemagic_build_id, project_kind, app_name, bundle_id, web_dir, logo_path",
     )
     .eq("id", buildId)
     .single();
   if (error || !data) throw new Error("Build not found");
   if (data.user_id !== userId) throw new Error("Forbidden");
   return data;
+}
+
+async function signLogoUrl(supabase: any, logoPath: string | null): Promise<string> {
+  if (!logoPath) return "";
+  const { data } = await supabase.storage
+    .from("build-sources")
+    .createSignedUrl(logoPath, 60 * 60 * 2);
+  return data?.signedUrl ?? "";
 }
 
 // -----------------------------------------------------------------------------
