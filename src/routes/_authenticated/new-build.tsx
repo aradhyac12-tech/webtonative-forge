@@ -305,6 +305,49 @@ function NewBuild() {
                   Must match the App ID registered in App Store Connect for iOS builds.
                 </p>
               </div>
+              <div>
+                <Label>App icon (optional)</Label>
+                <div className="mt-2 flex items-center gap-3">
+                  <label className="relative flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-xl border border-dashed border-border bg-muted/40 hover:bg-muted">
+                    {logoPreview ? (
+                      <img src={logoPreview} alt="App icon preview" className="h-full w-full object-cover" />
+                    ) : (
+                      <Upload className="h-5 w-5 text-muted-foreground" />
+                    )}
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        if (f.size > 5 * 1024 * 1024) {
+                          toast.error("Icon must be under 5 MB");
+                          return;
+                        }
+                        setLogoFile(f);
+                        setLogoPreview(URL.createObjectURL(f));
+                      }}
+                    />
+                  </label>
+                  <div className="min-w-0 flex-1 text-xs text-muted-foreground">
+                    {logoFile ? (
+                      <>
+                        <p className="truncate text-foreground">{logoFile.name}</p>
+                        <button
+                          type="button"
+                          onClick={() => { setLogoFile(null); setLogoPreview(null); }}
+                          className="mt-1 underline"
+                        >
+                          Remove
+                        </button>
+                      </>
+                    ) : (
+                      <p>Square PNG recommended (1024×1024). If skipped, we'll auto-detect an icon inside your project or fall back to the Capacitor default.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
               {result.projectKind !== "capacitor-full" && (
                 <div className="flex items-start gap-2 rounded-lg bg-primary/5 p-2 text-xs text-muted-foreground">
                   <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
