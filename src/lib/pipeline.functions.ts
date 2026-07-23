@@ -309,7 +309,8 @@ export const getArtifactUrl = createServerFn({ method: "POST" })
     if (!build || build.user_id !== userId) throw new Error("Not found");
     if (build.status !== "success" || !build.artifact_path)
       throw new Error("Artifact not ready.");
-    const { data: signed, error } = await supabase.storage
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: signed, error } = await supabaseAdmin.storage
       .from("build-artifacts")
       .createSignedUrl(build.artifact_path, 60 * 15);
     if (error || !signed) throw new Error("Could not sign URL.");
