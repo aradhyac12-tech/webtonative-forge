@@ -47,6 +47,8 @@ function NewBuild() {
   const [selectedKeystoreId, setSelectedKeystoreId] = useState<string | null>(null);
   const [appName, setAppName] = useState("");
   const [bundleId, setBundleId] = useState("");
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
   const { data: keystores } = useQuery({
