@@ -152,6 +152,8 @@ async function dispatchIos(supabase: any, userId: string, build: any) {
   // Push (or refresh) codemagic.yaml on main
   await upsertFileOnRepo(g, ownerLogin, repoName, IOS_WORKFLOW_PATH, IOS_WORKFLOW_YAML, "APKForge: sync ios workflow");
 
+  const logoUrl = await signLogoUrl(supabase, build.logo_path);
+
   const cmBuildId = await startBuild(cm, {
     workflowId: IOS_WORKFLOW_ID,
     branch: "main",
@@ -162,6 +164,7 @@ async function dispatchIos(supabase: any, userId: string, build: any) {
       BUNDLE_ID: build.bundle_id,
       WEB_DIR: build.web_dir ?? "www",
       PROJECT_KIND: build.project_kind ?? "capacitor-full",
+      LOGO_URL: logoUrl,
       APP_STORE_CONNECT_ISSUER_ID: signing.issuerId,
       APP_STORE_CONNECT_KEY_IDENTIFIER: signing.keyId,
       APP_STORE_CONNECT_PRIVATE_KEY: signing.privateKey,
