@@ -55,6 +55,7 @@ export type Database = {
           github_run_id: number | null
           id: string
           keystore_id: string | null
+          logo_path: string | null
           platform: string
           project_kind: string | null
           repo: string | null
@@ -76,6 +77,7 @@ export type Database = {
           github_run_id?: number | null
           id?: string
           keystore_id?: string | null
+          logo_path?: string | null
           platform?: string
           project_kind?: string | null
           repo?: string | null
@@ -97,6 +99,7 @@ export type Database = {
           github_run_id?: number | null
           id?: string
           keystore_id?: string | null
+          logo_path?: string | null
           platform?: string
           project_kind?: string | null
           repo?: string | null
