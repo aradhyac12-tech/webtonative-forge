@@ -47,6 +47,8 @@ function NewBuild() {
   const [selectedKeystoreId, setSelectedKeystoreId] = useState<string | null>(null);
   const [appName, setAppName] = useState("");
   const [bundleId, setBundleId] = useState("");
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
   const { data: keystores } = useQuery({
@@ -135,6 +137,16 @@ function NewBuild() {
         .upload(path, result.strippedZip, { contentType: "application/zip", upsert: false });
       if (upErr) throw upErr;
 
+      let logoPath: string | null = null;
+      if (logoFile) {
+        const ext = (logoFile.name.split(".").pop() || "png").toLowerCase();
+        logoPath = `${userId}/logos/${crypto.randomUUID()}.${ext}`;
+        const { error: logoErr } = await supabase.storage
+          .from("build-sources")
+          .upload(logoPath, logoFile, { contentType: logoFile.type || "image/png", upsert: false });
+        if (logoErr) throw logoErr;
+      }
+
       const { data: build, error: insErr } = await supabase
         .from("builds")
         .insert({
@@ -149,6 +161,7 @@ function NewBuild() {
           app_name: appName || null,
           bundle_id: bundleId || null,
           web_dir: result.webDir ?? null,
+          logo_path: logoPath,
         })
         .select("id")
         .single();
@@ -291,6 +304,49 @@ function NewBuild() {
                 <p className="mt-1 text-xs text-muted-foreground">
                   Must match the App ID registered in App Store Connect for iOS builds.
                 </p>
+              </div>
+              <div>
+                <Label>App icon (optional)</Label>
+                <div className="mt-2 flex items-center gap-3">
+                  <label className="relative flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-xl border border-dashed border-border bg-muted/40 hover:bg-muted">
+                    {logoPreview ? (
+                      <img src={logoPreview} alt="App icon preview" className="h-full w-full object-cover" />
+                    ) : (
+                      <Upload className="h-5 w-5 text-muted-foreground" />
+                    )}
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        if (f.size > 5 * 1024 * 1024) {
+                          toast.error("Icon must be under 5 MB");
+                          return;
+                        }
+                        setLogoFile(f);
+                        setLogoPreview(URL.createObjectURL(f));
+                      }}
+                    />
+                  </label>
+                  <div className="min-w-0 flex-1 text-xs text-muted-foreground">
+                    {logoFile ? (
+                      <>
+                        <p className="truncate text-foreground">{logoFile.name}</p>
+                        <button
+                          type="button"
+                          onClick={() => { setLogoFile(null); setLogoPreview(null); }}
+                          className="mt-1 underline"
+                        >
+                          Remove
+                        </button>
+                      </>
+                    ) : (
+                      <p>Square PNG recommended (1024×1024). If skipped, we'll auto-detect an icon inside your project or fall back to the Capacitor default.</p>
+                    )}
+                  </div>
+                </div>
               </div>
               {result.projectKind !== "capacitor-full" && (
                 <div className="flex items-start gap-2 rounded-lg bg-primary/5 p-2 text-xs text-muted-foreground">

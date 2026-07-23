@@ -143,28 +143,25 @@ export async function findRunForBuild(
   workflowFilename: string,
   buildId: string,
 ): Promise<number | null> {
-  // Poll a few times because dispatched runs take a second to appear.
-  for (let i = 0; i < 6; i++) {
-    const r = await gh<{ workflow_runs: Array<{ id: number; name?: string; display_title?: string; head_commit?: { message?: string } }> }>(
+  // The workflow's `run-name` embeds the build_id, so we can correlate the run
+  // exactly instead of guessing at "the most recent dispatch" (which may be a
+  // previous, stale build for the same repo).
+  for (let i = 0; i < 8; i++) {
+    const r = await gh<{
+      workflow_runs: Array<{ id: number; name?: string; display_title?: string; created_at?: string }>;
+    }>(
       g,
-      `/repos/${g.login}/${repo}/actions/workflows/${workflowFilename}/runs?event=workflow_dispatch&per_page=20`,
+      `/repos/${g.login}/${repo}/actions/workflows/${workflowFilename}/runs?event=workflow_dispatch&per_page=30`,
     );
     if (r.status === 200 && r.body?.workflow_runs) {
-      for (const run of r.body.workflow_runs) {
-        // We don't have a direct filter by input; check jobs for input reflection.
-        const jobs = await gh<{ jobs: Array<{ name: string; steps: Array<{ name: string }> }> }>(
-          g,
-          `/repos/${g.login}/${repo}/actions/runs/${run.id}/jobs`,
-        );
-        if (jobs.status === 200) {
-          // Match via artifact name which contains build id, but before build runs we can't know.
-          // Fallback: pick the newest run created after our dispatch. Return most recent.
-          return run.id;
-        }
-      }
-      if (r.body.workflow_runs.length) return r.body.workflow_runs[0].id;
+      const match = r.body.workflow_runs.find(
+        (run) =>
+          (run.display_title && run.display_title.includes(buildId)) ||
+          (run.name && run.name.includes(buildId)),
+      );
+      if (match) return match.id;
     }
-    await new Promise((res) => setTimeout(res, 1500));
+    await new Promise((res) => setTimeout(res, 2000));
   }
   return null;
 }

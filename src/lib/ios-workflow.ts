@@ -4,6 +4,7 @@ export const IOS_WORKFLOW_ID = "ios-signed-release";
 // codemagic.yaml — reads env vars injected via Codemagic REST API dispatch.
 // Signing uses App Store Connect API key (issuer id + key id + .p8) injected as
 // APP_STORE_CONNECT_ISSUER_ID / APP_STORE_CONNECT_KEY_IDENTIFIER / APP_STORE_CONNECT_PRIVATE_KEY.
+// LOGO_URL is optional — when set, we download it and generate iOS icons via @capacitor/assets.
 export const IOS_WORKFLOW_YAML = `workflows:
   ios-signed-release:
     name: APKForge iOS
@@ -42,6 +43,29 @@ export const IOS_WORKFLOW_YAML = `workflows:
             npx cap add ios
           fi
           npx cap sync ios || true
+      - name: Resolve app icon
+        script: |
+          set -e
+          cd project
+          mkdir -p resources
+          if [ -n "$LOGO_URL" ]; then
+            echo "Using uploaded logo"
+            curl -sSL --fail -o resources/icon.png "$LOGO_URL"
+          elif [ ! -f resources/icon.png ]; then
+            for candidate in public/icon.png public/logo.png public/apple-touch-icon.png src/assets/icon.png src/assets/logo.png assets/icon.png assets/logo.png icon.png logo.png; do
+              if [ -f "$candidate" ]; then
+                echo "Auto-detected icon at $candidate"
+                cp "$candidate" resources/icon.png
+                break
+              fi
+            done
+          fi
+          if [ -f resources/icon.png ]; then
+            npm i -D @capacitor/assets || true
+            npx @capacitor/assets generate --ios --iconBackgroundColor '#ffffff' --iconBackgroundColorDark '#000000' || echo "asset generation failed — continuing with default icon"
+          else
+            echo "No icon supplied or detected — using Capacitor default"
+          fi
       - name: CocoaPods install
         script: |
           set -e

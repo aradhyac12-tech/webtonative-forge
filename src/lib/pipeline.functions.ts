@@ -12,13 +12,21 @@ async function loadBuild(supabase: any, userId: string, buildId: string) {
   const { data, error } = await supabase
     .from("builds")
     .select(
-      "id, user_id, status, platform, artifact_path, keystore_id, repo, github_run_id, codemagic_build_id, project_kind, app_name, bundle_id, web_dir",
+      "id, user_id, status, platform, artifact_path, keystore_id, repo, github_run_id, codemagic_build_id, project_kind, app_name, bundle_id, web_dir, logo_path",
     )
     .eq("id", buildId)
     .single();
   if (error || !data) throw new Error("Build not found");
   if (data.user_id !== userId) throw new Error("Forbidden");
   return data;
+}
+
+async function signLogoUrl(supabase: any, logoPath: string | null): Promise<string> {
+  if (!logoPath) return "";
+  const { data } = await supabase.storage
+    .from("build-sources")
+    .createSignedUrl(logoPath, 60 * 60 * 2);
+  return data?.signedUrl ?? "";
 }
 
 // -----------------------------------------------------------------------------
@@ -81,6 +89,8 @@ async function dispatchAndroid(
   await putSecret(g, ANDROID_REPO_NAME, "APKFORGE_KEY_PASSWORD", ks.key_password);
   await putSecret(g, ANDROID_REPO_NAME, "APKFORGE_KEY_ALIAS", ks.key_alias);
 
+  const logoUrl = await signLogoUrl(supabase, build.logo_path);
+
   await dispatchWorkflow(g, ANDROID_REPO_NAME, ANDROID_WORKFLOW_FILENAME, {
     build_id: build.id,
     source_url: signed.signedUrl,
@@ -88,6 +98,7 @@ async function dispatchAndroid(
     app_name: build.app_name ?? "App",
     bundle_id: build.bundle_id ?? "com.apkforge.app",
     web_dir: build.web_dir ?? "www",
+    logo_url: logoUrl,
   });
 
   const runId = await findRunForBuild(g, ANDROID_REPO_NAME, ANDROID_WORKFLOW_FILENAME, build.id);
@@ -141,6 +152,8 @@ async function dispatchIos(supabase: any, userId: string, build: any) {
   // Push (or refresh) codemagic.yaml on main
   await upsertFileOnRepo(g, ownerLogin, repoName, IOS_WORKFLOW_PATH, IOS_WORKFLOW_YAML, "APKForge: sync ios workflow");
 
+  const logoUrl = await signLogoUrl(supabase, build.logo_path);
+
   const cmBuildId = await startBuild(cm, {
     workflowId: IOS_WORKFLOW_ID,
     branch: "main",
@@ -151,6 +164,7 @@ async function dispatchIos(supabase: any, userId: string, build: any) {
       BUNDLE_ID: build.bundle_id,
       WEB_DIR: build.web_dir ?? "www",
       PROJECT_KIND: build.project_kind ?? "capacitor-full",
+      LOGO_URL: logoUrl,
       APP_STORE_CONNECT_ISSUER_ID: signing.issuerId,
       APP_STORE_CONNECT_KEY_IDENTIFIER: signing.keyId,
       APP_STORE_CONNECT_PRIVATE_KEY: signing.privateKey,
