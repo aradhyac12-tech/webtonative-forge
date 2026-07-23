@@ -137,6 +137,16 @@ function NewBuild() {
         .upload(path, result.strippedZip, { contentType: "application/zip", upsert: false });
       if (upErr) throw upErr;
 
+      let logoPath: string | null = null;
+      if (logoFile) {
+        const ext = (logoFile.name.split(".").pop() || "png").toLowerCase();
+        logoPath = `${userId}/logos/${crypto.randomUUID()}.${ext}`;
+        const { error: logoErr } = await supabase.storage
+          .from("build-sources")
+          .upload(logoPath, logoFile, { contentType: logoFile.type || "image/png", upsert: false });
+        if (logoErr) throw logoErr;
+      }
+
       const { data: build, error: insErr } = await supabase
         .from("builds")
         .insert({
@@ -151,6 +161,7 @@ function NewBuild() {
           app_name: appName || null,
           bundle_id: bundleId || null,
           web_dir: result.webDir ?? null,
+          logo_path: logoPath,
         })
         .select("id")
         .single();
