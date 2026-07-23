@@ -216,18 +216,20 @@ async function refreshAndroid(supabase: any, userId: string, build: any) {
     return { status: newStatus, html_url: run.html_url };
   }
 
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
   if (run.conclusion === "success") {
     const zipBuf = await getArtifactDownload(g, repoName, runId);
     if (!zipBuf) throw new Error("No artifact produced by workflow.");
     const artifactPath = `${userId}/${build.id}.zip`;
-    const { error: upErr } = await supabase.storage
+    const { error: upErr } = await supabaseAdmin.storage
       .from("build-artifacts")
       .upload(artifactPath, new Blob([zipBuf], { type: "application/zip" }), {
         upsert: true,
         contentType: "application/zip",
       });
     if (upErr) throw upErr;
-    await supabase
+    await supabaseAdmin
       .from("builds")
       .update({ status: "success", artifact_path: artifactPath })
       .eq("id", build.id);
@@ -235,8 +237,8 @@ async function refreshAndroid(supabase: any, userId: string, build: any) {
   }
 
   const tail = await getFailureTail(g, repoName, runId);
-  await supabase.from("build_logs").insert({ build_id: build.id, chunk: tail });
-  await supabase
+  await supabaseAdmin.from("build_logs").insert({ build_id: build.id, chunk: tail });
+  await supabaseAdmin
     .from("builds")
     .update({ status: "failed", error_summary: `Workflow ${run.conclusion}. See logs.` })
     .eq("id", build.id);
