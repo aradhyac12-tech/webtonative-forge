@@ -216,18 +216,20 @@ async function refreshAndroid(supabase: any, userId: string, build: any) {
     return { status: newStatus, html_url: run.html_url };
   }
 
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
   if (run.conclusion === "success") {
     const zipBuf = await getArtifactDownload(g, repoName, runId);
     if (!zipBuf) throw new Error("No artifact produced by workflow.");
     const artifactPath = `${userId}/${build.id}.zip`;
-    const { error: upErr } = await supabase.storage
+    const { error: upErr } = await supabaseAdmin.storage
       .from("build-artifacts")
       .upload(artifactPath, new Blob([zipBuf], { type: "application/zip" }), {
         upsert: true,
         contentType: "application/zip",
       });
     if (upErr) throw upErr;
-    await supabase
+    await supabaseAdmin
       .from("builds")
       .update({ status: "success", artifact_path: artifactPath })
       .eq("id", build.id);
@@ -235,8 +237,8 @@ async function refreshAndroid(supabase: any, userId: string, build: any) {
   }
 
   const tail = await getFailureTail(g, repoName, runId);
-  await supabase.from("build_logs").insert({ build_id: build.id, chunk: tail });
-  await supabase
+  await supabaseAdmin.from("build_logs").insert({ build_id: build.id, chunk: tail });
+  await supabaseAdmin
     .from("builds")
     .update({ status: "failed", error_summary: `Workflow ${run.conclusion}. See logs.` })
     .eq("id", build.id);
@@ -260,19 +262,21 @@ async function refreshIos(supabase: any, userId: string, build: any) {
     return { status: mapped.status, html_url: cmBuild.buildUrl };
   }
 
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
   if (mapped.conclusion === "success") {
     const ipa = (cmBuild.artefacts ?? []).find((a) => a.name.toLowerCase().endsWith(".ipa"));
     if (!ipa) throw new Error("Codemagic finished but no .ipa artifact was found.");
     const buf = await downloadArtifact(cm, ipa.url);
     const artifactPath = `${userId}/${build.id}.ipa`;
-    const { error: upErr } = await supabase.storage
+    const { error: upErr } = await supabaseAdmin.storage
       .from("build-artifacts")
       .upload(artifactPath, new Blob([buf], { type: "application/octet-stream" }), {
         upsert: true,
         contentType: "application/octet-stream",
       });
     if (upErr) throw upErr;
-    await supabase
+    await supabaseAdmin
       .from("builds")
       .update({ status: "success", artifact_path: artifactPath })
       .eq("id", build.id);
@@ -280,8 +284,8 @@ async function refreshIos(supabase: any, userId: string, build: any) {
   }
 
   const tail = tailFromActions(cmBuild);
-  await supabase.from("build_logs").insert({ build_id: build.id, chunk: tail });
-  await supabase
+  await supabaseAdmin.from("build_logs").insert({ build_id: build.id, chunk: tail });
+  await supabaseAdmin
     .from("builds")
     .update({ status: "failed", error_summary: `Codemagic build ${cmBuild.status}.` })
     .eq("id", build.id);
@@ -305,7 +309,8 @@ export const getArtifactUrl = createServerFn({ method: "POST" })
     if (!build || build.user_id !== userId) throw new Error("Not found");
     if (build.status !== "success" || !build.artifact_path)
       throw new Error("Artifact not ready.");
-    const { data: signed, error } = await supabase.storage
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: signed, error } = await supabaseAdmin.storage
       .from("build-artifacts")
       .createSignedUrl(build.artifact_path, 60 * 15);
     if (error || !signed) throw new Error("Could not sign URL.");
