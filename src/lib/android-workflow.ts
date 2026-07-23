@@ -2,7 +2,9 @@ export const ANDROID_WORKFLOW_PATH = ".github/workflows/apkforge-android.yml";
 export const ANDROID_WORKFLOW_FILENAME = "apkforge-android.yml";
 
 // Auto-injects Capacitor when project_kind != capacitor-full.
+// run-name embeds the APKForge build_id so we can correlate the correct Actions run later.
 export const ANDROID_WORKFLOW_YAML = `name: APKForge Android
+run-name: "APKForge Android · \${{ inputs.build_id }}"
 on:
   workflow_dispatch:
     inputs:
@@ -12,6 +14,7 @@ on:
       app_name: { description: App display name, required: false, default: "App" }
       bundle_id: { description: Reverse-DNS bundle id, required: true }
       web_dir: { description: Web build output directory, required: false, default: "www" }
+      logo_url: { description: Optional signed URL to a square app icon (PNG), required: false, default: "" }
 
 jobs:
   build:
@@ -56,6 +59,31 @@ jobs:
             npx cap add android
           fi
           npx cap sync android || true
+      - name: Resolve app icon
+        working-directory: project
+        env:
+          LOGO_URL: \${{ github.event.inputs.logo_url }}
+        run: |
+          set -e
+          mkdir -p resources
+          if [ -n "$LOGO_URL" ]; then
+            echo "Using uploaded logo"
+            curl -sSL --fail -o resources/icon.png "$LOGO_URL"
+          elif [ ! -f resources/icon.png ]; then
+            for candidate in public/icon.png public/logo.png public/apple-touch-icon.png src/assets/icon.png src/assets/logo.png assets/icon.png assets/logo.png icon.png logo.png; do
+              if [ -f "$candidate" ]; then
+                echo "Auto-detected icon at $candidate"
+                cp "$candidate" resources/icon.png
+                break
+              fi
+            done
+          fi
+          if [ -f resources/icon.png ]; then
+            npm i -D @capacitor/assets || true
+            npx @capacitor/assets generate --android --iconBackgroundColor '#ffffff' --iconBackgroundColorDark '#000000' || echo "asset generation failed — continuing with default icon"
+          else
+            echo "No icon supplied or detected — using Capacitor default"
+          fi
       - name: Decode keystore
         run: |
           echo "\${{ secrets.APKFORGE_KEYSTORE_B64 }}" | base64 -d > project/android/app/release.keystore
