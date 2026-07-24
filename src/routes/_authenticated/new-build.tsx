@@ -49,6 +49,7 @@ function NewBuild() {
   const [bundleId, setBundleId] = useState("");
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [nodeVersion, setNodeVersion] = useState<string>("22");
   const [creating, setCreating] = useState(false);
 
   const { data: keystores } = useQuery({
@@ -162,6 +163,7 @@ function NewBuild() {
           bundle_id: bundleId || null,
           web_dir: result.webDir ?? null,
           logo_path: logoPath,
+          node_version: nodeVersion,
         })
         .select("id")
         .single();
@@ -347,6 +349,28 @@ function NewBuild() {
                     )}
                   </div>
                 </div>
+              </div>
+              <div>
+                <Label>Node.js version</Label>
+                <div className="mt-2 grid grid-cols-5 gap-2">
+                  {["20", "21", "22", "23", "24"].map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => setNodeVersion(v)}
+                      className={`rounded-lg border px-2 py-2 text-sm font-medium transition ${
+                        nodeVersion === v
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border bg-card text-muted-foreground hover:bg-muted"
+                      }`}
+                    >
+                      {v}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Installed on the GitHub Actions runner via <code className="rounded bg-muted px-1">actions/setup-node</code>. If your project has an <code className="rounded bg-muted px-1">.nvmrc</code> or <code className="rounded bg-muted px-1">engines.node</code>, this selection wins.
+                </p>
               </div>
               {result.projectKind !== "capacitor-full" && (
                 <div className="flex items-start gap-2 rounded-lg bg-primary/5 p-2 text-xs text-muted-foreground">

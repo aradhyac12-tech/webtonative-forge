@@ -99,6 +99,7 @@ async function dispatchAndroid(
     bundle_id: build.bundle_id ?? "com.apkforge.app",
     web_dir: build.web_dir ?? "www",
     logo_url: logoUrl,
+    node_version: build.node_version ?? "22",
   });
 
   const runId = await findRunForBuild(g, ANDROID_REPO_NAME, ANDROID_WORKFLOW_FILENAME, build.id);
@@ -165,6 +166,7 @@ async function dispatchIos(supabase: any, userId: string, build: any) {
       WEB_DIR: build.web_dir ?? "www",
       PROJECT_KIND: build.project_kind ?? "capacitor-full",
       LOGO_URL: logoUrl,
+      NODE_VERSION: build.node_version ?? "22",
       APP_STORE_CONNECT_ISSUER_ID: signing.issuerId,
       APP_STORE_CONNECT_KEY_IDENTIFIER: signing.keyId,
       APP_STORE_CONNECT_PRIVATE_KEY: signing.privateKey,
