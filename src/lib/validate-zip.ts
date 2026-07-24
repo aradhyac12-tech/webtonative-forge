@@ -159,6 +159,7 @@ export async function validateAndStrip(
       capConfigEntry = f;
     }
     if (r === "index.html" || r === "public/index.html") hasIndexHtml = true;
+    if (r === ".nvmrc") nvmrcEntry = f;
     if (r === "pubspec.yaml") hasPubspec = true;
     if (r === "metro.config.js" || r === "app.json" && !hasCapConfig) {
       // hint of RN — will confirm below
