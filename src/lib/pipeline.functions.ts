@@ -252,11 +252,14 @@ async function refreshAndroid(supabase: any, userId: string, build: any) {
     return { status: "success", html_url: run.html_url };
   }
 
-  const tail = await getFailureTail(g, repoName, runId);
+  const { tail, summary } = await getFailureTail(g, repoName, runId);
   await supabaseAdmin.from("build_logs").insert({ build_id: build.id, chunk: tail });
   await supabaseAdmin
     .from("builds")
-    .update({ status: "failed", error_summary: `Workflow ${run.conclusion}. See logs.` })
+    .update({
+      status: "failed",
+      error_summary: summary ?? `Workflow ${run.conclusion}. See logs.`,
+    })
     .eq("id", build.id);
   return { status: "failed", html_url: run.html_url };
 }
