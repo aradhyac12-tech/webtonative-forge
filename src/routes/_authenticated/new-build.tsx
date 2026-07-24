@@ -124,6 +124,24 @@ function NewBuild() {
   async function startBuild() {
     if (!result) return;
     if (!bundleId.trim()) return toast.error("Bundle ID is required.");
+    const majorNum = parseInt(nodeVersion, 10);
+    if (!(majorNum >= 20 && majorNum <= 24)) {
+      return toast.error("Pick a Node.js version between 20 and 24.");
+    }
+    const req = result.nodeRequirement;
+    if (req?.major) {
+      const src = req.source === "nvmrc" ? ".nvmrc" : "engines.node";
+      if (req.major < 20 || req.major > 24) {
+        return toast.error(
+          `Project ${src} requires Node ${req.raw}, which is outside the supported 20–24 range.`,
+        );
+      }
+      if (req.strict && majorNum !== req.major) {
+        return toast.error(
+          `Project ${src} pins Node ${req.raw}. Switch the picker to Node ${req.major} before building.`,
+        );
+      }
+    }
     if (platform === "android") {
       if (!gh) return toast.error("Connect GitHub first in Settings.");
       if (!selectedKeystoreId) return toast.error("Pick a signing keystore first.");
