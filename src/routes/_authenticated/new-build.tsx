@@ -87,6 +87,10 @@ function NewBuild() {
     if (result) {
       setAppName(result.appName ?? result.packageName ?? "");
       setBundleId(result.bundleId ?? "");
+      const req = result.nodeRequirement;
+      if (req?.major && req.major >= 20 && req.major <= 24) {
+        setNodeVersion(String(req.major));
+      }
     }
   }, [result]);
 
