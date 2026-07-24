@@ -187,6 +187,7 @@ export async function validateAndStrip(
     scripts?: Record<string, string>;
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
+    engines?: { node?: string };
   };
   let pkg: Pkg | null = null;
   if (packageJsonEntry) {
@@ -195,6 +196,18 @@ export async function validateAndStrip(
     } catch {
       /* not fatal */
     }
+  }
+
+  // Detect required Node — .nvmrc wins over engines.node when both exist.
+  let nodeRequirement: NodeRequirement | undefined;
+  if (nvmrcEntry) {
+    try {
+      const raw = (await nvmrcEntry.async("string")).trim();
+      if (raw) nodeRequirement = parseNodeSpec(raw, "nvmrc");
+    } catch { /* ignore */ }
+  }
+  if (!nodeRequirement && pkg?.engines?.node) {
+    nodeRequirement = parseNodeSpec(pkg.engines.node, "engines");
   }
   const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) };
   if (deps["react-native"] && !hasCapConfig) {
