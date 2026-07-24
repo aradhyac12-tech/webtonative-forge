@@ -1,0 +1,1 @@
+ALTER TABLE public.builds ADD COLUMN IF NOT EXISTS node_version text NOT NULL DEFAULT '22';
