@@ -13,7 +13,7 @@ export const IOS_WORKFLOW_YAML = `workflows:
     environment:
       xcode: latest
       cocoapods: default
-      node: 22
+      node: $NODE_VERSION
     scripts:
       - name: Fetch source
         script: |

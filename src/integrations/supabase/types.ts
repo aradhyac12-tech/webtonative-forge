@@ -56,6 +56,7 @@ export type Database = {
           id: string
           keystore_id: string | null
           logo_path: string | null
+          node_version: string
           platform: string
           project_kind: string | null
           repo: string | null
@@ -78,6 +79,7 @@ export type Database = {
           id?: string
           keystore_id?: string | null
           logo_path?: string | null
+          node_version?: string
           platform?: string
           project_kind?: string | null
           repo?: string | null
@@ -100,6 +102,7 @@ export type Database = {
           id?: string
           keystore_id?: string | null
           logo_path?: string | null
+          node_version?: string
           platform?: string
           project_kind?: string | null
           repo?: string | null
