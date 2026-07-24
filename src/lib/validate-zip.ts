@@ -28,6 +28,14 @@ function normalize(path: string): string {
 
 export type ProjectKind = "capacitor-full" | "capacitor-partial" | "web-app";
 
+export type NodeRequirement = {
+  raw: string;
+  source: "engines" | "nvmrc";
+  major?: number;
+  /** true when the spec pins a single major (e.g. "22", "22.x", "^22.5.0", or an .nvmrc line). */
+  strict: boolean;
+};
+
 export type ValidationOk = {
   ok: true;
   originalSize: number;
@@ -44,6 +52,7 @@ export type ValidationOk = {
   hasAndroid: boolean;
   hasIos: boolean;
   hasCapConfig: boolean;
+  nodeRequirement?: NodeRequirement;
   warnings: string[];
 };
 
