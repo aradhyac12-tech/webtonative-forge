@@ -323,6 +323,14 @@ export async function validateAndStrip(
   if (!bundleId) {
     warnings.push("No bundle ID detected — set one on the next step (required for iOS).");
   }
+  if (nodeRequirement) {
+    const src = nodeRequirement.source === "nvmrc" ? ".nvmrc" : "engines.node";
+    if (nodeRequirement.major && (nodeRequirement.major < 20 || nodeRequirement.major > 24)) {
+      warnings.push(
+        `Project ${src} requires Node ${nodeRequirement.raw}, which is outside the supported 20–24 range. The build will likely fail.`,
+      );
+    }
+  }
 
   return {
     ok: true,
@@ -340,6 +348,30 @@ export async function validateAndStrip(
     hasAndroid,
     hasIos,
     hasCapConfig,
+    nodeRequirement,
     warnings,
   };
+}
+
+/**
+ * Parse a Node version spec from .nvmrc or package.json engines.node.
+ * Returns the required major when we can determine one, and marks the spec as
+ * strict when it pins a single major (so the UI can hard-block mismatches).
+ */
+function parseNodeSpec(raw: string, source: "nvmrc" | "engines"): NodeRequirement {
+  const cleaned = raw.trim().replace(/^v/i, "");
+  // First integer we can find is the required (minimum) major.
+  const m = cleaned.match(/(\d{1,2})/);
+  const major = m ? parseInt(m[1], 10) : undefined;
+  let strict = false;
+  if (source === "nvmrc") {
+    strict = true;
+  } else {
+    // engines.node: strict when the spec pins one major (e.g. "22", "22.x",
+    // "^22.5.0", "~22.5.0"). Ranges like ">=20", ">=20 <25", "*" are loose.
+    if (/^\s*[\^~]?\d+(\.\d+)*(\.\d+)*\s*$/.test(cleaned) || /^\s*\d+\.x\s*$/i.test(cleaned)) {
+      strict = true;
+    }
+  }
+  return { raw, source, major, strict };
 }
