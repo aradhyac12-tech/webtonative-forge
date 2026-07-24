@@ -391,8 +391,34 @@ function NewBuild() {
                   ))}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Installed on the GitHub Actions runner via <code className="rounded bg-muted px-1">actions/setup-node</code>. If your project has an <code className="rounded bg-muted px-1">.nvmrc</code> or <code className="rounded bg-muted px-1">engines.node</code>, this selection wins.
+                  Installed on the GitHub Actions runner via <code className="rounded bg-muted px-1">actions/setup-node</code>.
                 </p>
+                {(() => {
+                  const req = result.nodeRequirement;
+                  if (!req) return null;
+                  const src = req.source === "nvmrc" ? ".nvmrc" : "engines.node";
+                  const outOfRange = req.major && (req.major < 20 || req.major > 24);
+                  const mismatch = req.strict && req.major && String(req.major) !== nodeVersion && !outOfRange;
+                  if (outOfRange) {
+                    return (
+                      <p className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
+                        Detected {src}: <code>{req.raw}</code>. Only Node 20–24 is supported — the build will fail.
+                      </p>
+                    );
+                  }
+                  if (mismatch) {
+                    return (
+                      <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">
+                        Detected {src}: <code>{req.raw}</code>. Switch to Node {req.major} to match your project.
+                      </p>
+                    );
+                  }
+                  return (
+                    <p className="mt-2 text-xs text-emerald-400">
+                      Auto-detected {src}: <code>{req.raw}</code> → Node {req.major ?? nodeVersion} preselected.
+                    </p>
+                  );
+                })()}
               </div>
               {result.projectKind !== "capacitor-full" && (
                 <div className="flex items-start gap-2 rounded-lg bg-primary/5 p-2 text-xs text-muted-foreground">
