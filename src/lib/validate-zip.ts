@@ -129,6 +129,7 @@ export async function validateAndStrip(
   let hasReactNative = false;
   let packageJsonEntry: JSZip.JSZipObject | null = null;
   let capConfigEntry: JSZip.JSZipObject | null = null;
+  let nvmrcEntry: JSZip.JSZipObject | null = null;
   const seenDirs = new Set<string>();
 
   for (const f of files) {
