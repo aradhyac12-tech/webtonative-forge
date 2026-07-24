@@ -12,7 +12,7 @@ async function loadBuild(supabase: any, userId: string, buildId: string) {
   const { data, error } = await supabase
     .from("builds")
     .select(
-      "id, user_id, status, platform, artifact_path, keystore_id, repo, github_run_id, codemagic_build_id, project_kind, app_name, bundle_id, web_dir, logo_path",
+      "id, user_id, status, platform, artifact_path, keystore_id, repo, github_run_id, codemagic_build_id, project_kind, app_name, bundle_id, web_dir, logo_path, node_version",
     )
     .eq("id", buildId)
     .single();
