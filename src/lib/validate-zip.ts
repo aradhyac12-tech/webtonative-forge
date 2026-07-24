@@ -28,6 +28,14 @@ function normalize(path: string): string {
 
 export type ProjectKind = "capacitor-full" | "capacitor-partial" | "web-app";
 
+export type NodeRequirement = {
+  raw: string;
+  source: "engines" | "nvmrc";
+  major?: number;
+  /** true when the spec pins a single major (e.g. "22", "22.x", "^22.5.0", or an .nvmrc line). */
+  strict: boolean;
+};
+
 export type ValidationOk = {
   ok: true;
   originalSize: number;
@@ -44,6 +52,7 @@ export type ValidationOk = {
   hasAndroid: boolean;
   hasIos: boolean;
   hasCapConfig: boolean;
+  nodeRequirement?: NodeRequirement;
   warnings: string[];
 };
 
@@ -120,6 +129,7 @@ export async function validateAndStrip(
   let hasReactNative = false;
   let packageJsonEntry: JSZip.JSZipObject | null = null;
   let capConfigEntry: JSZip.JSZipObject | null = null;
+  let nvmrcEntry: JSZip.JSZipObject | null = null;
   const seenDirs = new Set<string>();
 
   for (const f of files) {
@@ -149,6 +159,7 @@ export async function validateAndStrip(
       capConfigEntry = f;
     }
     if (r === "index.html" || r === "public/index.html") hasIndexHtml = true;
+    if (r === ".nvmrc") nvmrcEntry = f;
     if (r === "pubspec.yaml") hasPubspec = true;
     if (r === "metro.config.js" || r === "app.json" && !hasCapConfig) {
       // hint of RN — will confirm below
@@ -176,6 +187,7 @@ export async function validateAndStrip(
     scripts?: Record<string, string>;
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
+    engines?: { node?: string };
   };
   let pkg: Pkg | null = null;
   if (packageJsonEntry) {
@@ -184,6 +196,18 @@ export async function validateAndStrip(
     } catch {
       /* not fatal */
     }
+  }
+
+  // Detect required Node — .nvmrc wins over engines.node when both exist.
+  let nodeRequirement: NodeRequirement | undefined;
+  if (nvmrcEntry) {
+    try {
+      const raw = (await nvmrcEntry.async("string")).trim();
+      if (raw) nodeRequirement = parseNodeSpec(raw, "nvmrc");
+    } catch { /* ignore */ }
+  }
+  if (!nodeRequirement && pkg?.engines?.node) {
+    nodeRequirement = parseNodeSpec(pkg.engines.node, "engines");
   }
   const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) };
   if (deps["react-native"] && !hasCapConfig) {
@@ -299,6 +323,14 @@ export async function validateAndStrip(
   if (!bundleId) {
     warnings.push("No bundle ID detected — set one on the next step (required for iOS).");
   }
+  if (nodeRequirement) {
+    const src = nodeRequirement.source === "nvmrc" ? ".nvmrc" : "engines.node";
+    if (nodeRequirement.major && (nodeRequirement.major < 20 || nodeRequirement.major > 24)) {
+      warnings.push(
+        `Project ${src} requires Node ${nodeRequirement.raw}, which is outside the supported 20–24 range. The build will likely fail.`,
+      );
+    }
+  }
 
   return {
     ok: true,
@@ -316,6 +348,30 @@ export async function validateAndStrip(
     hasAndroid,
     hasIos,
     hasCapConfig,
+    nodeRequirement,
     warnings,
   };
+}
+
+/**
+ * Parse a Node version spec from .nvmrc or package.json engines.node.
+ * Returns the required major when we can determine one, and marks the spec as
+ * strict when it pins a single major (so the UI can hard-block mismatches).
+ */
+function parseNodeSpec(raw: string, source: "nvmrc" | "engines"): NodeRequirement {
+  const cleaned = raw.trim().replace(/^v/i, "");
+  // First integer we can find is the required (minimum) major.
+  const m = cleaned.match(/(\d{1,2})/);
+  const major = m ? parseInt(m[1], 10) : undefined;
+  let strict = false;
+  if (source === "nvmrc") {
+    strict = true;
+  } else {
+    // engines.node: strict when the spec pins one major (e.g. "22", "22.x",
+    // "^22.5.0", "~22.5.0"). Ranges like ">=20", ">=20 <25", "*" are loose.
+    if (/^\s*[\^~]?\d+(\.\d+)*(\.\d+)*\s*$/.test(cleaned) || /^\s*\d+\.x\s*$/i.test(cleaned)) {
+      strict = true;
+    }
+  }
+  return { raw, source, major, strict };
 }

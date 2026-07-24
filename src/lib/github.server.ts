@@ -209,7 +209,7 @@ export async function getFailureTail(
   g: GH,
   repo: string,
   runId: number,
-): Promise<string> {
+): Promise<{ tail: string; summary?: string }> {
   const res = await fetch(
     `${API}/repos/${g.login}/${repo}/actions/runs/${runId}/logs`,
     {
@@ -221,8 +221,49 @@ export async function getFailureTail(
       redirect: "follow",
     },
   );
-  if (!res.ok) return `(logs unavailable: ${res.status})`;
-  const text = await res.text();
-  const lines = text.split("\n");
-  return lines.slice(-200).join("\n");
+  if (!res.ok) return { tail: `(logs unavailable: ${res.status})` };
+
+  // /logs returns a ZIP archive of per-step .txt files. Parse it and pull the
+  // failing step (or the last step) so users get a real error message.
+  try {
+    const { default: JSZip } = await import("jszip");
+    const zip = await JSZip.loadAsync(await res.arrayBuffer());
+    const entries = Object.values(zip.files).filter(
+      (f) => !f.dir && f.name.toLowerCase().endsWith(".txt"),
+    );
+    // Prefer the step file that contains FAILED / BUILD FAILED / Error: markers.
+    let chosen: { name: string; text: string } | null = null;
+    for (const f of entries) {
+      const text = await f.async("string");
+      if (/FAILED|BUILD FAILED|Error: |error:|Exception|What went wrong/i.test(text)) {
+        chosen = { name: f.name, text };
+      }
+    }
+    if (!chosen && entries.length) {
+      const last = entries[entries.length - 1];
+      chosen = { name: last.name, text: await last.async("string") };
+    }
+    if (!chosen) return { tail: "(no log files in archive)" };
+
+    const lines = chosen.text.split("\n");
+    const tail = `--- ${chosen.name} ---\n` + lines.slice(-200).join("\n");
+    return { tail, summary: summarizeFailure(chosen.text) };
+  } catch (e) {
+    return { tail: `(could not parse logs: ${(e as Error).message})` };
+  }
+}
+
+function summarizeFailure(text: string): string | undefined {
+  if (/keystore password was incorrect/i.test(text)) {
+    return "Signing keystore password is incorrect. Update the keystore in Settings (the store or key password saved doesn't match this .keystore file).";
+  }
+  if (/Failed to read key .* from store.*password.*incorrect/i.test(text)) {
+    return "Signing key password is incorrect. Update the keystore in Settings.";
+  }
+  if (/EACCES|permission denied/i.test(text)) return "Permission denied while building — check keystore/file permissions.";
+  if (/ENOSPC|no space left on device/i.test(text)) return "GitHub runner ran out of disk space.";
+  if (/npm ERR!.*(ETARGET|ENOTFOUND|EAI_AGAIN)/i.test(text)) return "npm dependency resolution failed on the runner.";
+  const gradle = text.match(/Execution failed for task '([^']+)'\.\s*\n?\s*>\s*([^\n]+)/);
+  if (gradle) return `Gradle task ${gradle[1]} failed: ${gradle[2].trim().slice(0, 200)}`;
+  return undefined;
 }
