@@ -1,79 +1,97 @@
-## Scope
+Plan to fix the Android signing pipeline only:
 
-Extend APKForge with two capabilities:
-1. **iOS builds via Codemagic** (shared workspace account, App Store Connect API key signing)
-2. **Auto-Capacitor injection** for web-ish zips that don't already have Capacitor
+1. Confirmed current build error
 
-## Part 1 — Auto-Capacitor injection (runs before dispatch)
+- The latest Android build fails during `:app:packageRelease`.
+- The log shows: `No key with alias ... found in keystore`.
+- So the immediate issue is an alias mismatch: the saved signing alias is not present in the uploaded keystore.
 
-Extend `src/lib/validate-zip.ts` project detection to classify the zip into one of:
+2. Add a preflight signing validation step in the Android GitHub workflow
 
-- `capacitor-full` — has `capacitor.config.*` + `android/` and/or `ios/` (today's happy path, unchanged)
-- `capacitor-partial` — has `capacitor.config.*` but missing the target platform folder → run `npx cap add <platform>` in the workflow
-- `web-app` — no Capacitor, but detectable web project. Detection order:
-  1. Static: has `index.html` at root or in `dist/`/`build/`/`public/` with no `package.json` → treat pre-built
-  2. Vite/CRA/Next-export/Vue/Svelte: has `package.json` with a `build` script and one of `vite`, `react-scripts`, `@angular/cli`, `vue`, `svelte`, `next` in deps → run its build, then inject
-  3. Plain `package.json` with `build` script → attempt build, treat `dist`/`build`/`out`/`www` as web root (first one found)
-- `reject` — React Native (`ios/*.xcodeproj` + `Podfile` + no Capacitor), Flutter (`pubspec.yaml`), native-only, or nothing detectable
+- Insert a new step after `Decode keystore` and before `Gradle build`.
+- Use Java `keytool` on the GitHub runner to validate the keystore before Gradle starts.
+- The step will:
+  - Confirm `project/android/app/release.keystore` exists and is non-empty.
+  - Validate the keystore/store password by listing the keystore.
+  - Extract all aliases from the keystore.
+  - Validate the configured alias exists.
+  - If the configured alias is missing and exactly one alias exists, auto-select that alias for the Gradle build.
+  - If multiple aliases exist and the configured alias is missing, stop immediately with a clear message listing available aliases.
+  - Validate the key password by forcing private-key access with `keytool` before packaging.
+  - Detect corrupted/unreadable keystore files separately from bad passwords.
 
-For `web-app` and `capacitor-partial`, the CI workflow does the injection (not the browser) — keeps zip small and lets `npm ci` resolve deps:
+3. Make Gradle use the validated alias
 
-```bash
-# Injection steps baked into workflows
-npm ci || npm install
-[ -f capacitor.config.* ] || npx -y @capacitor/cli@latest init "$APP_NAME" "$BUNDLE_ID" --web-dir="$WEB_DIR"
-npm i -D @capacitor/cli
-npm i @capacitor/core @capacitor/<android|ios>
-[ -d <platform> ] || npx cap add <platform>
-npm run build || true   # only if package.json has build script
-npx cap sync <platform>
-```
+- Write the validated/auto-detected alias to a temporary environment file inside the workflow.
+- Update the `Gradle build` step to use the validated alias instead of blindly passing the saved alias.
+- Never run `./gradlew assembleRelease` if signing validation fails.
 
-Store detection result + inferred `web_dir`, `app_name`, `bundle_id` on the `builds` row so the workflow reads them as inputs.
+4. Generate signing diagnostics in CI logs
 
-## Part 2 — iOS via Codemagic (shared account)
+- Add a structured diagnostics block to the workflow logs with:
+  - Keystore file presence/size.
+  - Store password validation result.
+  - Alias count and alias names.
+  - Configured alias match result.
+  - Auto-detected alias result when applicable.
+  - Key password validation result.
+  - Final alias passed to Gradle.
+- No secret values will be printed.
 
-### Secrets (workspace-level, one-time)
-- `CODEMAGIC_API_TOKEN` — shared Codemagic personal access token
-- `CODEMAGIC_APP_ID` — the Codemagic app registered against the shared `apkforge-builds` GitHub repo
-- `APP_STORE_CONNECT_ISSUER_ID`
-- `APP_STORE_CONNECT_KEY_ID`
-- `APP_STORE_CONNECT_PRIVATE_KEY` — .p8 contents
+5. Improve Android failure summaries shown in the website
 
-I'll request these via `add_secret` once the code is in place.
+- Update the existing backend log summarizer to recognize:
+  - Missing alias.
+  - Multiple aliases requiring user selection.
+  - Invalid store password.
+  - Invalid key password.
+  - Corrupted/unreadable keystore.
+  - Missing decoded keystore.
+- Keep the frontend unchanged; the existing build detail screen will display the clearer `error_summary` and diagnostics log chunk.
 
-### New files
-- `src/lib/ios-workflow.ts` — `codemagic.yaml` template with an `ios-signed-release` workflow using `app-store-connect` integration and automatic code signing (bundle ID from build row)
-- `src/lib/codemagic.server.ts` — thin REST client: `POST /builds` to trigger, `GET /builds/:id` to poll, `GET /builds/:id/artifacts/:artifactId` for the IPA
-- Extend `src/lib/pipeline.functions.ts`:
-  - `dispatchBuild` branches on `build.platform`: Android → GitHub Actions (today); iOS → push same source to same repo, then Codemagic `POST /builds` with `workflowId: ios-signed-release`, `branch: build/<id>`
-  - `refreshBuildStatus` branches: iOS uses Codemagic status endpoints; on success pulls IPA and stores at `build-artifacts/<user>/<id>.ipa`
+6.also verify Before starting any Android build, automatically execute the complete native project preparation pipeline exactly as a developer would.
 
-### DB
-Migration to add `codemagic_build_id` (text, nullable) to `builds`. No new tables; Apple creds are workspace secrets, not per-user.
+&nbsp;
 
-## Part 3 — UI
+The platform must automatically:
 
-- `/new-build`: platform toggle (Android / iOS). Bundle ID field becomes required for iOS. Show a warning strip when detection returns `web-app` explaining "we'll add Capacitor for you in the cloud build."
-- `/build/$id`: stage labels adapt per provider (Codemagic stages: "Provisioning → Building → Signing → Publishing")
-- `/settings`: iOS section is workspace-managed — show "iOS signing configured by workspace admin" or "iOS signing not yet configured" based on whether the workspace secrets exist (via a small server fn that only returns booleans)
+&nbsp;
 
-## Technical notes
+- Install project dependencies ("npm install", "bun install", or "pnpm install" as appropriate).
 
-- **Codemagic auth**: `x-auth-token: <CODEMAGIC_API_TOKEN>` header on all requests to `https://api.codemagic.io`
-- **Signing**: Codemagic's `app-store-connect` integration + `automatic_code_signing: true` in `codemagic.yaml` provisions certs/profiles from the App Store Connect key at build time — no manual .p12/.mobileprovision handling
-- **Failure surfacing**: Codemagic returns structured `buildActions[]` with logs URLs; store the last failing action's tail in `build_logs` just like GitHub Actions today
-- **Rate limits**: Codemagic API is 100 req/min per token — 5s polling matches the Android side fine
-- **Rejection UX**: `validate-zip.ts` returns `{ok:false, reason}` for RN/Flutter/native/empty; `/new-build` shows the reason instead of uploading
+- Detect the package manager automatically.
 
-## Out of scope (still)
+- Verify Node.js, Java, Gradle, Android SDK, and Capacitor versions.
 
-Push notifications, cert expiry preflight, TestFlight upload, per-user Codemagic accounts, iOS simulator/unsigned builds.
+- Run "npx cap sync".
 
-## Order of implementation
+- If the Android project does not exist, run "npx cap add android".
 
-1. Zip detection + `web-app`/`capacitor-partial` classification
-2. Android workflow updated to run injection when needed (proves the injection path on the cheap side first)
-3. `codemagic.yaml` + Codemagic REST client + iOS branch in `dispatchBuild`/`refreshBuildStatus`
-4. UI: platform toggle, detection warnings, settings visibility
-5. Request workspace secrets, wire them up, smoke test one iOS build
+- If it exists, synchronize all Capacitor plugins, assets, permissions, and native configuration.
+
+- Automatically regenerate native resources (icons, splash screens, manifests, Capacitor config, plugin registration, Gradle files) when required.
+
+- Validate "capacitor.config.*", "AndroidManifest.xml", Gradle configuration, package name, signing configuration, deep links, intent filters, permissions, Firebase configuration, and plugin compatibility.
+
+- Verify that all native plugins are installed and registered correctly.
+
+- Detect missing Android SDK packages and install them automatically when possible.
+
+- Clean previous build artifacts ("gradlew clean") before release builds.
+
+- Perform pre-build diagnostics and stop immediately if any required configuration is missing.
+
+- Generate a detailed validation report before invoking Gradle.
+
+- Only begin APK/AAB generation after all synchronization and validation steps complete successfully.
+
+&nbsp;
+
+The system must reproduce the essential Capacitor/Android Studio preparation workflow automatically so users do not need to manually run commands such as "npx cap sync", "npx cap add android", "gradlew clean", or perform native project synchronization themselves.
+
+Files to change:
+
+- `src/lib/android-workflow.ts` — add the signing validation preflight and pass the validated alias to Gradle.
+- `src/lib/github.server.ts` — improve log summary detection for signing validation failures.
+
+Note: “If multiple aliases exist, let the user choose one” cannot be fully implemented without changing the app/settings UI. Since you asked not to modify application code, this plan will stop early and show the available aliases so the existing keystore setting can be corrected. If you want a real dropdown chooser, that requires a small settings UI change in a separate step.
