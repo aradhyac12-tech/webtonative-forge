@@ -254,6 +254,26 @@ export async function getFailureTail(
 }
 
 function summarizeFailure(text: string): string | undefined {
+  const signingFailure = text.match(/SIGNING_VALIDATION_FAILED:\s*([^\n]+)/i);
+  if (signingFailure?.[1]) return signingFailure[1].trim().slice(0, 240);
+  if (/SIGNING_VALIDATION_PASSED/i.test(text) && /No key with alias .* found in keystore/i.test(text)) {
+    return "Android signing validation passed, but Gradle could not find the validated key alias. Re-run the build so the updated workflow uses the validated alias.";
+  }
+  if (/No key with alias .* found in keystore/i.test(text)) {
+    return "Configured key alias does not exist in the keystore. Re-add the keystore with the correct alias, or leave it blank when the keystore has exactly one alias so it can be auto-detected.";
+  }
+  if (/Invalid keystore password|saved store password does not open this keystore/i.test(text)) {
+    return "Invalid keystore password. The saved store password does not open this keystore.";
+  }
+  if (/Invalid key password|Cannot recover key/i.test(text)) {
+    return "Invalid key password for the selected alias. Update the key password in Settings.";
+  }
+  if (/Corrupted or unsupported keystore|Invalid keystore format|Unrecognized keystore format/i.test(text)) {
+    return "Corrupted or unsupported keystore file. Upload a valid JKS or PKCS12 keystore.";
+  }
+  if (/No signing aliases found/i.test(text)) {
+    return "No signing aliases found in the keystore. Upload a keystore containing a private key entry.";
+  }
   if (/keystore password was incorrect/i.test(text)) {
     return "Signing keystore password is incorrect. Update the keystore in Settings (the store or key password saved doesn't match this .keystore file).";
   }
