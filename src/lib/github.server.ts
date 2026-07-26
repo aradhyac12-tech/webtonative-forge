@@ -118,24 +118,136 @@ export async function putSecret(
   if (put.status >= 300) throw new Error(`Set secret ${name} failed (${put.status})`);
 }
 
+function bodyText(body: unknown): string {
+  if (body == null) return "";
+  if (typeof body === "string") return body.slice(0, 400);
+  try {
+    return JSON.stringify(body).slice(0, 400);
+  } catch {
+    return "";
+  }
+}
+
+async function getDefaultBranch(g: GH, owner: string, repo: string): Promise<string> {
+  const r = await gh<{ default_branch?: string }>(g, `/repos/${owner}/${repo}`);
+  return r.body?.default_branch || "main";
+}
+
+async function ensureActionsEnabled(g: GH, owner: string, repo: string, workflowFilename: string) {
+  try {
+    await gh(g, `/repos/${owner}/${repo}/actions/permissions`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled: true, allowed_actions: "all" }),
+    });
+  } catch {
+    // best effort — token may lack admin scope
+  }
+  try {
+    await gh(g, `/repos/${owner}/${repo}/actions/workflows/${workflowFilename}/enable`, {
+      method: "PUT",
+    });
+  } catch {
+    // best effort
+  }
+}
+
+/** Wait until GitHub has indexed the workflow file so a dispatch can target it. */
+async function waitForWorkflow(
+  g: GH,
+  owner: string,
+  repo: string,
+  workflowFilename: string,
+): Promise<boolean> {
+  for (let i = 0; i < 10; i++) {
+    const r = await gh<{ id?: number; state?: string }>(
+      g,
+      `/repos/${owner}/${repo}/actions/workflows/${workflowFilename}`,
+    );
+    if (r.status === 200 && r.body?.id) return true;
+    await new Promise((res) => setTimeout(res, 1500));
+  }
+  return false;
+}
+
+/** Inputs declared by the copy of the workflow that currently lives on the repo. */
+async function declaredInputs(
+  g: GH,
+  owner: string,
+  repo: string,
+  path: string,
+): Promise<Set<string> | null> {
+  const r = await gh<{ content?: string; encoding?: string }>(
+    g,
+    `/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`,
+  );
+  if (r.status !== 200 || !r.body?.content) return null;
+  let yaml: string;
+  try {
+    yaml = decodeURIComponent(escape(atob(r.body.content.replace(/\n/g, ""))));
+  } catch {
+    return null;
+  }
+  const m = yaml.match(/workflow_dispatch:\s*\n\s*inputs:\s*\n([\s\S]*?)(?:\n\S|\njobs:)/);
+  const block = m?.[1] ?? yaml.split("inputs:")[1];
+  if (!block) return null;
+  const names = new Set<string>();
+  for (const line of block.split("\n")) {
+    const im = line.match(/^\s{6,}([A-Za-z0-9_-]+):/);
+    if (im) names.add(im[1]);
+  }
+  return names.size ? names : null;
+}
+
 export async function dispatchWorkflow(
   g: GH,
   repo: string,
   workflowFilename: string,
   inputs: Record<string, string>,
+  workflowPath?: string,
 ): Promise<void> {
-  const d = await gh(
-    g,
-    `/repos/${g.login}/${repo}/actions/workflows/${workflowFilename}/dispatches`,
-    {
-      method: "POST",
-      body: JSON.stringify({ ref: "main", inputs }),
-    },
-  );
-  if (d.status >= 300) {
-    throw new Error(`Workflow dispatch failed (${d.status})`);
+  const owner = g.login;
+  const ref = await getDefaultBranch(g, owner, repo);
+  await ensureActionsEnabled(g, owner, repo, workflowFilename);
+  await waitForWorkflow(g, owner, repo, workflowFilename);
+
+  let payloadInputs = inputs;
+  let lastError = "";
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const d = await gh(
+      g,
+      `/repos/${owner}/${repo}/actions/workflows/${workflowFilename}/dispatches`,
+      {
+        method: "POST",
+        body: JSON.stringify({ ref, inputs: payloadInputs }),
+      },
+    );
+    if (d.status < 300) return;
+
+    lastError = bodyText(d.body);
+
+    // Workflow not indexed yet, or the indexed copy is stale and rejects new inputs.
+    if (d.status === 404 || d.status === 422) {
+      if (workflowPath && /unexpected inputs/i.test(lastError)) {
+        const declared = await declaredInputs(g, owner, repo, workflowPath);
+        if (declared) {
+          const filtered: Record<string, string> = {};
+          for (const [k, v] of Object.entries(inputs)) if (declared.has(k)) filtered[k] = v;
+          payloadInputs = filtered;
+        }
+      }
+      await new Promise((res) => setTimeout(res, 2500));
+      continue;
+    }
+
+    throw new Error(`Workflow dispatch failed (${d.status}): ${lastError}`);
   }
+
+  throw new Error(
+    `Workflow dispatch failed (422) on ref "${ref}" after retries: ${lastError || "no details from GitHub"}`,
+  );
 }
+
 
 export async function findRunForBuild(
   g: GH,
