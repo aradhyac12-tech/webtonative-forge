@@ -348,14 +348,20 @@ export async function getFailureTail(
     const entries = Object.values(zip.files).filter(
       (f) => !f.dir && f.name.toLowerCase().endsWith(".txt"),
     );
-    // Prefer the step file that contains FAILED / BUILD FAILED / Error: markers.
+    // Prefer the step file that carries an APKForge validation marker (the most
+    // actionable report), then any step with generic failure markers.
     let chosen: { name: string; text: string } | null = null;
+    let marked: { name: string; text: string } | null = null;
     for (const f of entries) {
       const text = await f.async("string");
+      if (/PREBUILD_VALIDATION_FAILED|SIGNING_VALIDATION_FAILED|APK_VERIFICATION_FAILED/.test(text)) {
+        marked = { name: f.name, text };
+      }
       if (/FAILED|BUILD FAILED|Error: |error:|Exception|What went wrong/i.test(text)) {
         chosen = { name: f.name, text };
       }
     }
+    chosen = marked ?? chosen;
     if (!chosen && entries.length) {
       const last = entries[entries.length - 1];
       chosen = { name: last.name, text: await last.async("string") };
@@ -365,6 +371,7 @@ export async function getFailureTail(
     const lines = chosen.text.split("\n");
     const tail = `--- ${chosen.name} ---\n` + lines.slice(-200).join("\n");
     return { tail, summary: summarizeFailure(chosen.text) };
+
   } catch (e) {
     return { tail: `(could not parse logs: ${(e as Error).message})` };
   }
