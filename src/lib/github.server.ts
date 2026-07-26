@@ -78,8 +78,9 @@ export async function upsertFileOnRepo(
     body: JSON.stringify(body),
   });
   if (put.status >= 300) {
-    throw new Error(`GitHub file write failed (${put.status})`);
+    throw new Error(`GitHub file write failed (${put.status}): ${JSON.stringify(put.body).slice(0, 300)}`);
   }
+
 }
 
 export async function upsertFile(
