@@ -478,26 +478,26 @@ jobs:
             if grep -Eiq "Invalid keystore format|Unrecognized keystore format|toDerInputStream rejects tag|not a keystore" "$LIST_OUT"; then
               fail "Corrupted or unsupported keystore file. Upload a valid JKS or PKCS12 keystore."
             fi
-            fail "Unable to read keystore: $(tail -n 5 "$LIST_OUT" | tr '\n' ' ' | sed 's/::/:/g')"
+            fail "Unable to read keystore: $(tail -n 5 "$LIST_OUT" | tr '\\n' ' ' | sed 's/::/:/g')"
           fi
           log "Keystore password: valid"
 
           ALIASES="$(grep -E '^Alias name:' "$LIST_OUT" | sed 's/^Alias name: //' | sed '/^$/d')"
-          ALIAS_COUNT="$(printf '%s\n' "$ALIASES" | sed '/^$/d' | wc -l | tr -d ' ')"
+          ALIAS_COUNT="$(printf '%s\\n' "$ALIASES" | sed '/^$/d' | wc -l | tr -d ' ')"
           if [ "$ALIAS_COUNT" = "0" ]; then
             fail "No signing aliases found in the keystore. Upload a keystore containing a private key entry."
           fi
           log "Aliases found ($ALIAS_COUNT):"
-          printf '%s\n' "$ALIASES" | sed 's/^/- /' | tee -a "$REPORT_S"
+          printf '%s\\n' "$ALIASES" | sed 's/^/- /' | tee -a "$REPORT_S"
 
           FINAL_ALIAS="\${CONFIGURED_ALIAS:-}"
-          if [ -n "$FINAL_ALIAS" ] && printf '%s\n' "$ALIASES" | grep -Fx -- "$FINAL_ALIAS" >/dev/null; then
+          if [ -n "$FINAL_ALIAS" ] && printf '%s\\n' "$ALIASES" | grep -Fx -- "$FINAL_ALIAS" >/dev/null; then
             log "Configured alias: found"
           elif [ "$ALIAS_COUNT" = "1" ]; then
-            FINAL_ALIAS="$(printf '%s\n' "$ALIASES" | head -n 1)"
+            FINAL_ALIAS="$(printf '%s\\n' "$ALIASES" | head -n 1)"
             log "Configured alias was missing or blank; auto-selected only alias: $FINAL_ALIAS"
           else
-            AVAILABLE_ALIASES="$(printf '%s\n' "$ALIASES" | paste -sd ', ' -)"
+            AVAILABLE_ALIASES="$(printf '%s\\n' "$ALIASES" | paste -sd ', ' -)"
             log "Configured alias: missing"
             fail "Configured key alias does not exist in the keystore. Available aliases: $AVAILABLE_ALIASES. Update the keystore alias in Settings."
           fi
@@ -510,7 +510,7 @@ jobs:
             if grep -Eiq "Alias <.*> does not exist|does not exist" "$KEY_OUT"; then
               fail "Alias '$FINAL_ALIAS' does not exist in the keystore."
             fi
-            fail "Unable to validate key password for alias '$FINAL_ALIAS': $(tail -n 5 "$KEY_OUT" | tr '\n' ' ' | sed 's/::/:/g')"
+            fail "Unable to validate key password for alias '$FINAL_ALIAS': $(tail -n 5 "$KEY_OUT" | tr '\\n' ' ' | sed 's/::/:/g')"
           fi
           log "Key password: valid"
           log "Final signing alias: $FINAL_ALIAS"
