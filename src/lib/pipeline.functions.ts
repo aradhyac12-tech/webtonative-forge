@@ -91,16 +91,23 @@ async function dispatchAndroid(
 
   const logoUrl = await signLogoUrl(supabase, build.logo_path);
 
-  await dispatchWorkflow(g, ANDROID_REPO_NAME, ANDROID_WORKFLOW_FILENAME, {
-    build_id: build.id,
-    source_url: signed.signedUrl,
-    project_kind: build.project_kind ?? "capacitor-full",
-    app_name: build.app_name ?? "App",
-    bundle_id: build.bundle_id ?? "com.apkforge.app",
-    web_dir: build.web_dir ?? "www",
-    logo_url: logoUrl,
-    node_version: build.node_version ?? "22",
-  });
+  await dispatchWorkflow(
+    g,
+    ANDROID_REPO_NAME,
+    ANDROID_WORKFLOW_FILENAME,
+    {
+      build_id: build.id,
+      source_url: signed.signedUrl,
+      project_kind: build.project_kind ?? "capacitor-full",
+      app_name: build.app_name ?? "App",
+      bundle_id: build.bundle_id ?? "com.apkforge.app",
+      web_dir: build.web_dir ?? "www",
+      logo_url: logoUrl,
+      node_version: build.node_version ?? "22",
+    },
+    ANDROID_WORKFLOW_PATH,
+  );
+
 
   const runId = await findRunForBuild(g, ANDROID_REPO_NAME, ANDROID_WORKFLOW_FILENAME, build.id);
 
