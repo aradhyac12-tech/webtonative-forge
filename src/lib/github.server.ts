@@ -104,7 +104,9 @@ export async function putSecret(
     `/repos/${g.login}/${repo}/actions/secrets/public-key`,
   );
   if (keyRes.status >= 300 || !keyRes.body) {
-    throw new Error(`Fetch public key failed (${keyRes.status})`);
+    throw new Error(
+      `Fetch public key failed (${keyRes.status}): ${JSON.stringify(keyRes.body).slice(0, 300)}`,
+    );
   }
   const publicKey = Uint8Array.from(atob(keyRes.body.key), (c) => c.charCodeAt(0));
   const messageBytes = new TextEncoder().encode(value);
@@ -116,7 +118,9 @@ export async function putSecret(
     method: "PUT",
     body: JSON.stringify({ encrypted_value: encryptedValue, key_id: keyRes.body.key_id }),
   });
-  if (put.status >= 300) throw new Error(`Set secret ${name} failed (${put.status})`);
+  if (put.status >= 300)
+    throw new Error(`Set secret ${name} failed (${put.status}): ${JSON.stringify(put.body).slice(0, 300)}`);
+
 }
 
 function bodyText(body: unknown): string {
