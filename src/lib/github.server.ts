@@ -378,8 +378,31 @@ export async function getFailureTail(
 }
 
 function summarizeFailure(text: string): string | undefined {
+  const prebuild = text.match(/PREBUILD_VALIDATION_FAILED:\s*([^\n]+)/);
+  if (prebuild?.[1]) return prebuild[1].trim().slice(0, 240);
+  const apkVerify = text.match(/APK_VERIFICATION_FAILED:\s*([^\n]+)/);
+  if (apkVerify?.[1]) return apkVerify[1].trim().slice(0, 240);
   const signingFailure = text.match(/SIGNING_VALIDATION_FAILED:\s*([^\n]+)/i);
   if (signingFailure?.[1]) return signingFailure[1].trim().slice(0, 240);
+  if (/Failed to install the following.*licences have not been accepted|You have not accepted the license agreements/i.test(text)) {
+    return "Android SDK licences were not accepted on the runner. Re-run the build — the workflow now accepts them automatically.";
+  }
+  if (/google-services\.json is missing|File google-services\.json is missing/i.test(text)) {
+    return "Firebase is used by this project but google-services.json is missing from the uploaded zip. Add it under android/app/ (or the project root) and re-upload.";
+  }
+  if (/Manifest merger failed/i.test(text)) {
+    return "AndroidManifest merge conflict between plugins. See the pre-build report for the conflicting attribute.";
+  }
+  if (/requires a minSdk|uses-sdk:minSdkVersion .* cannot be smaller/i.test(text)) {
+    return "A Capacitor plugin requires a higher Android minSdk than the project declares. The pre-build report lists the required level.";
+  }
+  if (/@capacitor\/(core|cli|android).*version mismatch|Capacitor major version mismatch/i.test(text)) {
+    return "Capacitor packages are on mismatched major versions. Align @capacitor/core, @capacitor/cli and @capacitor/android in package.json.";
+  }
+  if (/EBADENGINE|engine "node" is incompatible|Unsupported engine/i.test(text)) {
+    return "The selected Node.js version is incompatible with this project's dependencies. Pick the Node version your package.json engines field requires.";
+  }
+
   if (/SIGNING_VALIDATION_PASSED/i.test(text) && /No key with alias .* found in keystore/i.test(text)) {
     return "Android signing validation passed, but Gradle could not find the validated key alias. Re-run the build so the updated workflow uses the validated alias.";
   }
