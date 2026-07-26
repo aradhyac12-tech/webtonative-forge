@@ -1,97 +1,53 @@
-Plan to fix the Android signing pipeline only:
+## What I verified
 
-1. Confirmed current build error
+- `dispatchWorkflow` in `src/lib/github.server.ts` throws `Workflow dispatch failed (422)` and **discards GitHub's response body**, so the actual reason is currently invisible. GitHub returns 422 for dispatch in a few distinct cases, and we can't tell which one without the body.
+- The dispatch hardcodes `ref: "main"` — if the build repo's default branch is not `main` (or `main` has no commit yet), GitHub answers 422.
+- The workflow YAML is written to the repo (`upsertFile`) and dispatched immediately in the same request. GitHub needs a moment to index a newly added/changed workflow; dispatching before indexing (or against a stale indexed copy that lacks the newer inputs such as `logo_url` / `node_version`) returns 422 `Unexpected inputs provided`.
+- All inputs are sent as strings from `pipeline.functions.ts`; `logo_url` is sent as `""` when there's no logo — an empty-string input for a non-required input is accepted, but any input not declared in the indexed workflow is not.
 
-- The latest Android build fails during `:app:packageRelease`.
-- The log shows: `No key with alias ... found in keystore`.
-- So the immediate issue is an alias mismatch: the saved signing alias is not present in the uploaded keystore.
+Diagnosis is therefore: 422 is a dispatch-contract problem (branch ref, workflow indexing/stale inputs), not a build problem. The first step of the fix is to surface GitHub's own message so it can never again be a guess.
 
-2. Add a preflight signing validation step in the Android GitHub workflow
+## Plan
 
-- Insert a new step after `Decode keystore` and before `Gradle build`.
-- Use Java `keytool` on the GitHub runner to validate the keystore before Gradle starts.
-- The step will:
-  - Confirm `project/android/app/release.keystore` exists and is non-empty.
-  - Validate the keystore/store password by listing the keystore.
-  - Extract all aliases from the keystore.
-  - Validate the configured alias exists.
-  - If the configured alias is missing and exactly one alias exists, auto-select that alias for the Gradle build.
-  - If multiple aliases exist and the configured alias is missing, stop immediately with a clear message listing available aliases.
-  - Validate the key password by forcing private-key access with `keytool` before packaging.
-  - Detect corrupted/unreadable keystore files separately from bad passwords.
+### 1. Make dispatch failures self-explanatory and self-healing (`src/lib/github.server.ts`)
 
-3. Make Gradle use the validated alias
+- Include GitHub's response body in every thrown error (`dispatchWorkflow`, `upsertFile`, `putSecret`, `ensureRepo`) so the UI shows e.g. "Unexpected inputs provided: ..." or "No ref found for: main".
+- Resolve the repo's real default branch via `GET /repos/{owner}/{repo}` and dispatch against that instead of hardcoded `main`.
+- If the default branch has no commits, create the initial commit (the workflow upsert already can) and re-resolve.
+- After writing the workflow file, poll `GET /repos/.../actions/workflows/{file}` until the workflow is registered (bounded retries), then dispatch.
+- Retry dispatch with backoff on 422 `Unexpected inputs provided` and on 404 (workflow not yet indexed) — up to ~5 attempts — after re-upserting the workflow file.
+- Add `listWorkflowInputs`: read the declared `workflow_dispatch` inputs from the repo copy of the YAML and drop/patch any input the indexed workflow doesn't declare, so an older cached workflow can never hard-fail a dispatch.
+- Ensure Actions are enabled on the repo (`PUT /repos/.../actions/permissions`) and the workflow isn't disabled (`PUT .../workflows/{file}/enable`), both of which also produce dispatch errors.
 
-- Write the validated/auto-detected alias to a temporary environment file inside the workflow.
-- Update the `Gradle build` step to use the validated alias instead of blindly passing the saved alias.
-- Never run `./gradlew assembleRelease` if signing validation fails.
+### 2. Universal pre-build sync & validation in the Android workflow (`src/lib/android-workflow.ts`)
 
-4. Generate signing diagnostics in CI logs
+Replace the single "Install & validate" step with an ordered, reporting pipeline that works for any uploaded web project (Capacitor or not):
 
-- Add a structured diagnostics block to the workflow logs with:
-  - Keystore file presence/size.
-  - Store password validation result.
-  - Alias count and alias names.
-  - Configured alias match result.
-  - Auto-detected alias result when applicable.
-  - Key password validation result.
-  - Final alias passed to Gradle.
-- No secret values will be printed.
+1. **Environment report** — Node, package manager, Java, Gradle, `ANDROID_HOME`, SDK packages, Capacitor CLI/core versions; install missing SDK packages via `sdkmanager` when possible.
+2. **Project detection** — detect package manager from lockfile, detect `capacitor-full` / `capacitor-partial` / `web-app`, detect the real web output dir from `capacitor.config.*` or common build outputs (`dist`, `build`, `out`, `www`).
+3. **Dependency install** — install with the detected PM, fall back to `npm install --legacy-peer-deps`, then ensure `@capacitor/core`, `@capacitor/cli`, `@capacitor/android` exist at compatible major versions (auto-align mismatched Capacitor majors).
+4. **Web build** — run the project's build script when present; fall back to existing assets and warn (never hard-fail on a missing build script).
+5. **Native project generation/repair** — `cap init` when config missing, `cap add android` when `android/` missing, regenerate `android/` when it is present but broken (missing `gradlew`, missing manifest, missing `capacitor.settings.gradle`).
+6. **Asset + plugin sync** — generate icons/splash with `@capacitor/assets` when a logo is present or detected, then `cap sync android` and verify every installed Capacitor plugin appears in `android/capacitor.settings.gradle` / `capacitor.build.gradle`; re-run sync once if a plugin is missing.
+7. **Config validation with auto-repair** — verify and fix where safe: `applicationId`/`namespace` match the requested bundle ID, `AndroidManifest.xml` well-formedness, required permissions implied by installed plugins (camera, mic, storage/file picker, notifications, biometric, background tasks), `google-services.json` presence + Gradle plugin wiring when Firebase deps are detected, and `minSdk`/`compileSdk` floors required by the installed plugins.
+8. **Deep links / OAuth intent filters** — derive schemes from `capacitor.config.*` (`appId`, `server.hostname`, custom `androidScheme`), from the bundle ID, and from any detected auth SDK (Supabase / Firebase / Auth0 / Clerk / Cognito). Inject the `<intent-filter>` entries for the custom scheme and any App Link host into `AndroidManifest.xml` if absent, so native OAuth/PKCE callbacks return to the app instead of the browser.
+9. **Signing preflight** — keep the existing `keytool` validation (keystore presence, store password, alias enumeration, single-alias auto-select, key password).
+10. **Clean** — `gradlew clean` before release packaging.
+11. **Diagnostics report** — write every check, its result, and every auto-fix applied to `android-prebuild-report.txt`, echo it into the log with a clear `PREBUILD_VALIDATION_PASSED` / `PREBUILD_VALIDATION_FAILED: <reason>` marker, and abort before Gradle if any blocking issue remains.
 
-5. Improve Android failure summaries shown in the website
+### 3. Post-build APK verification (same workflow, after `assembleRelease`)
 
-- Update the existing backend log summarizer to recognize:
-  - Missing alias.
-  - Multiple aliases requiring user selection.
-  - Invalid store password.
-  - Invalid key password.
-  - Corrupted/unreadable keystore.
-  - Missing decoded keystore.
-- Keep the frontend unchanged; the existing build detail screen will display the clearer `error_summary` and diagnostics log chunk.
+- Locate the release APK, verify the signature with `apksigner verify --print-certs` (fall back to `jarsigner -verify`).
+- Use `aapt2 dump badging`/`xmltree` on the APK to assert: expected `package` / `versionCode`, the deep-link intent filters and every derived URL scheme (generic — whatever scheme the project declares, e.g. `duospace://auth`), `BridgeActivity`/`MainActivity` presence, and that plugin classes are registered.
+- Emit `APK_VERIFICATION_PASSED` / `APK_VERIFICATION_FAILED: <reason>`; fail the job on verification failure so a partially functional APK is never published, and upload both report files alongside the APK artifact.
 
-6.also verify Before starting any Android build, automatically execute the complete native project preparation pipeline exactly as a developer would.
+### 4. Surface everything in the app (`src/lib/github.server.ts` summarizer)
 
-&nbsp;
+- Extend `summarizeFailure` to recognize the new markers (`PREBUILD_VALIDATION_FAILED`, `APK_VERIFICATION_FAILED`), plus common Capacitor/Gradle/SDK failures (missing SDK licence, Capacitor major mismatch, missing `google-services.json`, AndroidManifest merge conflict, unsupported Node for a dependency).
+- Prefer the pre-build/verification report step file when choosing which log to tail, so the build detail page shows the actionable report rather than a generic Gradle stack trace.
 
-The platform must automatically:
+### Technical notes
 
-&nbsp;
-
-- Install project dependencies ("npm install", "bun install", or "pnpm install" as appropriate).
-
-- Detect the package manager automatically.
-
-- Verify Node.js, Java, Gradle, Android SDK, and Capacitor versions.
-
-- Run "npx cap sync".
-
-- If the Android project does not exist, run "npx cap add android".
-
-- If it exists, synchronize all Capacitor plugins, assets, permissions, and native configuration.
-
-- Automatically regenerate native resources (icons, splash screens, manifests, Capacitor config, plugin registration, Gradle files) when required.
-
-- Validate "capacitor.config.*", "AndroidManifest.xml", Gradle configuration, package name, signing configuration, deep links, intent filters, permissions, Firebase configuration, and plugin compatibility.
-
-- Verify that all native plugins are installed and registered correctly.
-
-- Detect missing Android SDK packages and install them automatically when possible.
-
-- Clean previous build artifacts ("gradlew clean") before release builds.
-
-- Perform pre-build diagnostics and stop immediately if any required configuration is missing.
-
-- Generate a detailed validation report before invoking Gradle.
-
-- Only begin APK/AAB generation after all synchronization and validation steps complete successfully.
-
-&nbsp;
-
-The system must reproduce the essential Capacitor/Android Studio preparation workflow automatically so users do not need to manually run commands such as "npx cap sync", "npx cap add android", "gradlew clean", or perform native project synchronization themselves.
-
-Files to change:
-
-- `src/lib/android-workflow.ts` — add the signing validation preflight and pass the validated alias to Gradle.
-- `src/lib/github.server.ts` — improve log summary detection for signing validation failures.
-
-Note: “If multiple aliases exist, let the user choose one” cannot be fully implemented without changing the app/settings UI. Since you asked not to modify application code, this plan will stop early and show the available aliases so the existing keystore setting can be corrected. If you want a real dropdown chooser, that requires a small settings UI change in a separate step.
+- Everything stays in the CI workflow YAML plus the two server helpers; the build UI is unchanged and no schema change is needed.
+- All detection is derived from the uploaded project (config files, lockfiles, dependency list) — no hardcoded app names, bundle IDs, or schemes — so it applies to any project, not one specific APK.
+- Auto-repairs are limited to idempotent, safe rewrites (manifest additions, Gradle property alignment, regenerated native folder); anything ambiguous aborts with an explicit reason instead of guessing.

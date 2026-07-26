@@ -78,8 +78,9 @@ export async function upsertFileOnRepo(
     body: JSON.stringify(body),
   });
   if (put.status >= 300) {
-    throw new Error(`GitHub file write failed (${put.status})`);
+    throw new Error(`GitHub file write failed (${put.status}): ${JSON.stringify(put.body).slice(0, 300)}`);
   }
+
 }
 
 export async function upsertFile(
@@ -103,7 +104,9 @@ export async function putSecret(
     `/repos/${g.login}/${repo}/actions/secrets/public-key`,
   );
   if (keyRes.status >= 300 || !keyRes.body) {
-    throw new Error(`Fetch public key failed (${keyRes.status})`);
+    throw new Error(
+      `Fetch public key failed (${keyRes.status}): ${JSON.stringify(keyRes.body).slice(0, 300)}`,
+    );
   }
   const publicKey = Uint8Array.from(atob(keyRes.body.key), (c) => c.charCodeAt(0));
   const messageBytes = new TextEncoder().encode(value);
@@ -115,7 +118,89 @@ export async function putSecret(
     method: "PUT",
     body: JSON.stringify({ encrypted_value: encryptedValue, key_id: keyRes.body.key_id }),
   });
-  if (put.status >= 300) throw new Error(`Set secret ${name} failed (${put.status})`);
+  if (put.status >= 300)
+    throw new Error(`Set secret ${name} failed (${put.status}): ${JSON.stringify(put.body).slice(0, 300)}`);
+
+}
+
+function bodyText(body: unknown): string {
+  if (body == null) return "";
+  if (typeof body === "string") return body.slice(0, 400);
+  try {
+    return JSON.stringify(body).slice(0, 400);
+  } catch {
+    return "";
+  }
+}
+
+async function getDefaultBranch(g: GH, owner: string, repo: string): Promise<string> {
+  const r = await gh<{ default_branch?: string }>(g, `/repos/${owner}/${repo}`);
+  return r.body?.default_branch || "main";
+}
+
+async function ensureActionsEnabled(g: GH, owner: string, repo: string, workflowFilename: string) {
+  try {
+    await gh(g, `/repos/${owner}/${repo}/actions/permissions`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled: true, allowed_actions: "all" }),
+    });
+  } catch {
+    // best effort — token may lack admin scope
+  }
+  try {
+    await gh(g, `/repos/${owner}/${repo}/actions/workflows/${workflowFilename}/enable`, {
+      method: "PUT",
+    });
+  } catch {
+    // best effort
+  }
+}
+
+/** Wait until GitHub has indexed the workflow file so a dispatch can target it. */
+async function waitForWorkflow(
+  g: GH,
+  owner: string,
+  repo: string,
+  workflowFilename: string,
+): Promise<boolean> {
+  for (let i = 0; i < 10; i++) {
+    const r = await gh<{ id?: number; state?: string }>(
+      g,
+      `/repos/${owner}/${repo}/actions/workflows/${workflowFilename}`,
+    );
+    if (r.status === 200 && r.body?.id) return true;
+    await new Promise((res) => setTimeout(res, 1500));
+  }
+  return false;
+}
+
+/** Inputs declared by the copy of the workflow that currently lives on the repo. */
+async function declaredInputs(
+  g: GH,
+  owner: string,
+  repo: string,
+  path: string,
+): Promise<Set<string> | null> {
+  const r = await gh<{ content?: string; encoding?: string }>(
+    g,
+    `/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`,
+  );
+  if (r.status !== 200 || !r.body?.content) return null;
+  let yaml: string;
+  try {
+    yaml = decodeURIComponent(escape(atob(r.body.content.replace(/\n/g, ""))));
+  } catch {
+    return null;
+  }
+  const m = yaml.match(/workflow_dispatch:\s*\n\s*inputs:\s*\n([\s\S]*?)(?:\n\S|\njobs:)/);
+  const block = m?.[1] ?? yaml.split("inputs:")[1];
+  if (!block) return null;
+  const names = new Set<string>();
+  for (const line of block.split("\n")) {
+    const im = line.match(/^\s{6,}([A-Za-z0-9_-]+):/);
+    if (im) names.add(im[1]);
+  }
+  return names.size ? names : null;
 }
 
 export async function dispatchWorkflow(
@@ -123,19 +208,51 @@ export async function dispatchWorkflow(
   repo: string,
   workflowFilename: string,
   inputs: Record<string, string>,
+  workflowPath?: string,
 ): Promise<void> {
-  const d = await gh(
-    g,
-    `/repos/${g.login}/${repo}/actions/workflows/${workflowFilename}/dispatches`,
-    {
-      method: "POST",
-      body: JSON.stringify({ ref: "main", inputs }),
-    },
-  );
-  if (d.status >= 300) {
-    throw new Error(`Workflow dispatch failed (${d.status})`);
+  const owner = g.login;
+  const ref = await getDefaultBranch(g, owner, repo);
+  await ensureActionsEnabled(g, owner, repo, workflowFilename);
+  await waitForWorkflow(g, owner, repo, workflowFilename);
+
+  let payloadInputs = inputs;
+  let lastError = "";
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const d = await gh(
+      g,
+      `/repos/${owner}/${repo}/actions/workflows/${workflowFilename}/dispatches`,
+      {
+        method: "POST",
+        body: JSON.stringify({ ref, inputs: payloadInputs }),
+      },
+    );
+    if (d.status < 300) return;
+
+    lastError = bodyText(d.body);
+
+    // Workflow not indexed yet, or the indexed copy is stale and rejects new inputs.
+    if (d.status === 404 || d.status === 422) {
+      if (workflowPath && /unexpected inputs/i.test(lastError)) {
+        const declared = await declaredInputs(g, owner, repo, workflowPath);
+        if (declared) {
+          const filtered: Record<string, string> = {};
+          for (const [k, v] of Object.entries(inputs)) if (declared.has(k)) filtered[k] = v;
+          payloadInputs = filtered;
+        }
+      }
+      await new Promise((res) => setTimeout(res, 2500));
+      continue;
+    }
+
+    throw new Error(`Workflow dispatch failed (${d.status}): ${lastError}`);
   }
+
+  throw new Error(
+    `Workflow dispatch failed (422) on ref "${ref}" after retries: ${lastError || "no details from GitHub"}`,
+  );
 }
+
 
 export async function findRunForBuild(
   g: GH,
@@ -231,14 +348,20 @@ export async function getFailureTail(
     const entries = Object.values(zip.files).filter(
       (f) => !f.dir && f.name.toLowerCase().endsWith(".txt"),
     );
-    // Prefer the step file that contains FAILED / BUILD FAILED / Error: markers.
+    // Prefer the step file that carries an APKForge validation marker (the most
+    // actionable report), then any step with generic failure markers.
     let chosen: { name: string; text: string } | null = null;
+    let marked: { name: string; text: string } | null = null;
     for (const f of entries) {
       const text = await f.async("string");
+      if (/PREBUILD_VALIDATION_FAILED|SIGNING_VALIDATION_FAILED|APK_VERIFICATION_FAILED/.test(text)) {
+        marked = { name: f.name, text };
+      }
       if (/FAILED|BUILD FAILED|Error: |error:|Exception|What went wrong/i.test(text)) {
         chosen = { name: f.name, text };
       }
     }
+    chosen = marked ?? chosen;
     if (!chosen && entries.length) {
       const last = entries[entries.length - 1];
       chosen = { name: last.name, text: await last.async("string") };
@@ -248,14 +371,38 @@ export async function getFailureTail(
     const lines = chosen.text.split("\n");
     const tail = `--- ${chosen.name} ---\n` + lines.slice(-200).join("\n");
     return { tail, summary: summarizeFailure(chosen.text) };
+
   } catch (e) {
     return { tail: `(could not parse logs: ${(e as Error).message})` };
   }
 }
 
 function summarizeFailure(text: string): string | undefined {
+  const prebuild = text.match(/PREBUILD_VALIDATION_FAILED:\s*([^\n]+)/);
+  if (prebuild?.[1]) return prebuild[1].trim().slice(0, 240);
+  const apkVerify = text.match(/APK_VERIFICATION_FAILED:\s*([^\n]+)/);
+  if (apkVerify?.[1]) return apkVerify[1].trim().slice(0, 240);
   const signingFailure = text.match(/SIGNING_VALIDATION_FAILED:\s*([^\n]+)/i);
   if (signingFailure?.[1]) return signingFailure[1].trim().slice(0, 240);
+  if (/Failed to install the following.*licences have not been accepted|You have not accepted the license agreements/i.test(text)) {
+    return "Android SDK licences were not accepted on the runner. Re-run the build — the workflow now accepts them automatically.";
+  }
+  if (/google-services\.json is missing|File google-services\.json is missing/i.test(text)) {
+    return "Firebase is used by this project but google-services.json is missing from the uploaded zip. Add it under android/app/ (or the project root) and re-upload.";
+  }
+  if (/Manifest merger failed/i.test(text)) {
+    return "AndroidManifest merge conflict between plugins. See the pre-build report for the conflicting attribute.";
+  }
+  if (/requires a minSdk|uses-sdk:minSdkVersion .* cannot be smaller/i.test(text)) {
+    return "A Capacitor plugin requires a higher Android minSdk than the project declares. The pre-build report lists the required level.";
+  }
+  if (/@capacitor\/(core|cli|android).*version mismatch|Capacitor major version mismatch/i.test(text)) {
+    return "Capacitor packages are on mismatched major versions. Align @capacitor/core, @capacitor/cli and @capacitor/android in package.json.";
+  }
+  if (/EBADENGINE|engine "node" is incompatible|Unsupported engine/i.test(text)) {
+    return "The selected Node.js version is incompatible with this project's dependencies. Pick the Node version your package.json engines field requires.";
+  }
+
   if (/SIGNING_VALIDATION_PASSED/i.test(text) && /No key with alias .* found in keystore/i.test(text)) {
     return "Android signing validation passed, but Gradle could not find the validated key alias. Re-run the build so the updated workflow uses the validated alias.";
   }
