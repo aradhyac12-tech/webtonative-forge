@@ -12,13 +12,24 @@ async function loadBuild(supabase: any, userId: string, buildId: string) {
   const { data, error } = await supabase
     .from("builds")
     .select(
-      "id, user_id, status, platform, artifact_path, keystore_id, repo, github_run_id, codemagic_build_id, project_kind, app_name, bundle_id, web_dir, logo_path, node_version",
+      "id, user_id, status, platform, artifact_path, keystore_id, repo, github_run_id, codemagic_build_id, project_kind, app_name, bundle_id, web_dir, logo_path, node_version, diagnostic_token",
     )
     .eq("id", buildId)
     .single();
   if (error || !data) throw new Error("Build not found");
   if (data.user_id !== userId) throw new Error("Forbidden");
   return data;
+}
+
+function cleanAppOrigin(value: string | undefined): string {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+    return url.origin;
+  } catch {
+    return "";
+  }
 }
 
 async function signLogoUrl(supabase: any, logoPath: string | null): Promise<string> {
@@ -35,21 +46,25 @@ async function signLogoUrl(supabase: any, logoPath: string | null): Promise<stri
 
 export const dispatchBuild = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: { buildId: string }) => z.object({ buildId: z.string().uuid() }).parse(d))
+  .inputValidator((d: { buildId: string; appOrigin?: string }) =>
+    z.object({ buildId: z.string().uuid(), appOrigin: z.string().optional() }).parse(d),
+  )
   .handler(async ({ data, context }) => {
     const { supabase, userId } = context;
     const build = await loadBuild(supabase, userId, data.buildId);
+    const appOrigin = cleanAppOrigin(data.appOrigin);
 
     if (build.platform === "ios") {
       return dispatchIos(supabase, userId, build);
     }
-    return dispatchAndroid(supabase, userId, build);
+    return dispatchAndroid(supabase, userId, build, appOrigin);
   });
 
 async function dispatchAndroid(
   supabase: any,
   userId: string,
   build: any,
+  appOrigin: string,
 ) {
   const {
     ensureRepo,
@@ -104,6 +119,9 @@ async function dispatchAndroid(
       web_dir: build.web_dir ?? "www",
       logo_url: logoUrl,
       node_version: build.node_version ?? "22",
+      finalize_endpoint: appOrigin ? `${appOrigin}/api/public/build-finalize` : "",
+      diagnostic_endpoint: appOrigin ? `${appOrigin}/api/public/build-diagnostics` : "",
+      diagnostic_token: build.diagnostic_token ?? "",
     },
     ANDROID_WORKFLOW_PATH,
   );
@@ -242,14 +260,14 @@ async function refreshAndroid(supabase: any, userId: string, build: any) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
   if (run.conclusion === "success") {
-    const zipBuf = await getArtifactDownload(g, repoName, runId);
-    if (!zipBuf) throw new Error("No artifact produced by workflow.");
-    const artifactPath = `${userId}/${build.id}.zip`;
+    const apkBuf = await getArtifactDownload(g, repoName, runId);
+    if (!apkBuf) throw new Error("No APK artifact produced by workflow.");
+    const artifactPath = `${userId}/${build.id}.apk`;
     const { error: upErr } = await supabaseAdmin.storage
       .from("build-artifacts")
-      .upload(artifactPath, new Blob([zipBuf], { type: "application/zip" }), {
+      .upload(artifactPath, new Blob([apkBuf], { type: "application/vnd.android.package-archive" }), {
         upsert: true,
-        contentType: "application/zip",
+        contentType: "application/vnd.android.package-archive",
       });
     if (upErr) throw upErr;
     await supabaseAdmin

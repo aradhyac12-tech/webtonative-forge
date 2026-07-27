@@ -38,7 +38,8 @@ function Dashboard() {
       if (error) throw error;
       return data as Build[];
     },
-    refetchInterval: 8000,
+    refetchInterval: 3000,
+    refetchOnWindowFocus: true,
   });
 
   const totals = (builds ?? []).reduce(
