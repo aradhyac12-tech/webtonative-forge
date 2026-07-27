@@ -597,41 +597,43 @@ jobs:
           const pkgDir = path.join('android/app/src/main/java', ...pkg.split('.'));
           const helperPath = path.join(pkgDir, 'ApkforgeOAuthDiagnostics.java');
           fs.mkdirSync(pkgDir, { recursive: true });
-          fs.writeFileSync(helperPath, `package ${pkg};
-
-import android.app.Activity;
-import android.content.Intent;
-import android.net.Uri;
-import android.util.Log;
-
-public final class ApkforgeOAuthDiagnostics {
-    private static final String TAG = "APKForgeOAuth";
-
-    public static void logActivity(String stage, Activity activity, Intent intent) {
-        try {
-            Log.i(TAG, stage + " taskId=" + activity.getTaskId() + " finishing=" + activity.isFinishing() + " changingConfig=" + activity.isChangingConfigurations() + " intent=" + sanitize(intent));
-        } catch (Throwable t) {
-            Log.e(TAG, "diagnostic logger failed at " + stage, t);
-        }
-    }
-
-    private static String sanitize(Intent intent) {
-        if (intent == null) return "none";
-        Uri data = intent.getData();
-        if (data == null) return "action=" + intent.getAction() + " data=none";
-        StringBuilder keys = new StringBuilder();
-        try {
-            for (String name : data.getQueryParameterNames()) {
-                String lower = name.toLowerCase();
-                if (lower.contains("token") || lower.contains("secret") || lower.contains("password") || lower.contains("refresh") || lower.contains("access")) continue;
-                if (keys.length() > 0) keys.append(',');
-                keys.append(name);
-            }
-        } catch (Throwable ignored) {}
-        return "action=" + intent.getAction() + " scheme=" + data.getScheme() + " host=" + data.getHost() + " path=" + data.getPath() + " queryKeys=" + keys;
-    }
-}
-`);
+          fs.writeFileSync(helperPath, [
+            'package ' + pkg + ';',
+            '',
+            'import android.app.Activity;',
+            'import android.content.Intent;',
+            'import android.net.Uri;',
+            'import android.util.Log;',
+            '',
+            'public final class ApkforgeOAuthDiagnostics {',
+            '    private static final String TAG = "APKForgeOAuth";',
+            '',
+            '    public static void logActivity(String stage, Activity activity, Intent intent) {',
+            '        try {',
+            '            Log.i(TAG, stage + " taskId=" + activity.getTaskId() + " finishing=" + activity.isFinishing() + " changingConfig=" + activity.isChangingConfigurations() + " intent=" + sanitize(intent));',
+            '        } catch (Throwable t) {',
+            '            Log.e(TAG, "diagnostic logger failed at " + stage, t);',
+            '        }',
+            '    }',
+            '',
+            '    private static String sanitize(Intent intent) {',
+            '        if (intent == null) return "none";',
+            '        Uri data = intent.getData();',
+            '        if (data == null) return "action=" + intent.getAction() + " data=none";',
+            '        StringBuilder keys = new StringBuilder();',
+            '        try {',
+            '            for (String name : data.getQueryParameterNames()) {',
+            '                String lower = name.toLowerCase();',
+            '                if (lower.contains("token") || lower.contains("secret") || lower.contains("password") || lower.contains("refresh") || lower.contains("access")) continue;',
+            '                if (keys.length() > 0) keys.append(\',\');',
+            '                keys.append(name);',
+            '            }',
+            '        } catch (Throwable ignored) {}',
+            '        return "action=" + intent.getAction() + " scheme=" + data.getScheme() + " host=" + data.getHost() + " path=" + data.getPath() + " queryKeys=" + keys;',
+            '    }',
+            '}',
+            ''
+          ].join('\n'));
           function insertBeforeLastBrace(source, block) {
             const idx = source.lastIndexOf('}');
             if (idx < 0) throw new Error('MainActivity.java is malformed; missing class closing brace.');
