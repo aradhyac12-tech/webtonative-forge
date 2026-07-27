@@ -287,8 +287,22 @@ export async function getRun(
   g: GH,
   repo: string,
   runId: number,
-): Promise<{ status: string; conclusion: string | null; html_url: string }> {
-  const r = await gh<{ status: string; conclusion: string | null; html_url: string }>(
+): Promise<{
+  id: number;
+  name?: string;
+  display_title?: string;
+  status: string;
+  conclusion: string | null;
+  html_url: string;
+}> {
+  const r = await gh<{
+    id: number;
+    name?: string;
+    display_title?: string;
+    status: string;
+    conclusion: string | null;
+    html_url: string;
+  }>(
     g,
     `/repos/${g.login}/${repo}/actions/runs/${runId}`,
   );
@@ -301,12 +315,19 @@ export async function getArtifactDownload(
   repo: string,
   runId: number,
 ): Promise<ArrayBuffer | null> {
-  const list = await gh<{ artifacts: Array<{ id: number; name: string }> }>(
-    g,
-    `/repos/${g.login}/${repo}/actions/runs/${runId}/artifacts`,
-  );
-  if (list.status >= 300 || !list.body?.artifacts?.length) return null;
-  const apk = list.body.artifacts.find((a) => a.name.startsWith("apk-")) ?? list.body.artifacts[0];
+  let apk: { id: number; name: string } | undefined;
+  for (let i = 0; i < 6; i++) {
+    const list = await gh<{ artifacts: Array<{ id: number; name: string }> }>(
+      g,
+      `/repos/${g.login}/${repo}/actions/runs/${runId}/artifacts`,
+    );
+    if (list.status < 300 && list.body?.artifacts?.length) {
+      apk = list.body.artifacts.find((a) => a.name.startsWith("apk-"));
+      if (apk) break;
+    }
+    await new Promise((res) => setTimeout(res, 2500));
+  }
+  if (!apk) return null;
   const res = await fetch(
     `${API}/repos/${g.login}/${repo}/actions/artifacts/${apk.id}/zip`,
     {
@@ -319,7 +340,16 @@ export async function getArtifactDownload(
     },
   );
   if (!res.ok) throw new Error(`Artifact download failed (${res.status})`);
-  return await res.arrayBuffer();
+  const artifactZip = await res.arrayBuffer();
+  const { default: JSZip } = await import("jszip");
+  const zip = await JSZip.loadAsync(artifactZip);
+  const apkFile = Object.values(zip.files).find(
+    (f) => !f.dir && f.name.toLowerCase().endsWith(".apk"),
+  );
+  if (!apkFile) {
+    throw new Error("APK artifact did not contain a release .apk file.");
+  }
+  return await apkFile.async("arraybuffer");
 }
 
 export async function getFailureTail(
@@ -378,6 +408,8 @@ export async function getFailureTail(
 }
 
 function summarizeFailure(text: string): string | undefined {
+  const oauthRuntime = text.match(/OAUTH_RUNTIME_FAILED:\s*([^\n]+)/);
+  if (oauthRuntime?.[1]) return oauthRuntime[1].trim().slice(0, 240);
   const prebuild = text.match(/PREBUILD_VALIDATION_FAILED:\s*([^\n]+)/);
   if (prebuild?.[1]) return prebuild[1].trim().slice(0, 240);
   const apkVerify = text.match(/APK_VERIFICATION_FAILED:\s*([^\n]+)/);
