@@ -51,6 +51,7 @@ export type Database = {
           bundle_id: string | null
           codemagic_build_id: string | null
           created_at: string
+          diagnostic_token: string | null
           error_summary: string | null
           github_run_id: number | null
           id: string
@@ -74,6 +75,7 @@ export type Database = {
           bundle_id?: string | null
           codemagic_build_id?: string | null
           created_at?: string
+          diagnostic_token?: string | null
           error_summary?: string | null
           github_run_id?: number | null
           id?: string
@@ -97,6 +99,7 @@ export type Database = {
           bundle_id?: string | null
           codemagic_build_id?: string | null
           created_at?: string
+          diagnostic_token?: string | null
           error_summary?: string | null
           github_run_id?: number | null
           id?: string

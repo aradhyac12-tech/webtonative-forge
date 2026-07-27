@@ -48,7 +48,8 @@ function BuildDetail() {
       if (error) throw error;
       return data as Build;
     },
-    refetchInterval: (q) => (TERMINAL.has(q.state.data?.status ?? "") ? false : 5000),
+    refetchInterval: (q) => (TERMINAL.has(q.state.data?.status ?? "") ? false : 3000),
+    refetchOnWindowFocus: true,
   });
 
   const logsQ = useQuery({
@@ -73,7 +74,7 @@ function BuildDetail() {
   useEffect(() => {
     if (!buildQ.data) return;
     if (TERMINAL.has(buildQ.data.status)) return;
-    const t = setInterval(() => refreshMut.mutate(), 8000);
+    const t = setInterval(() => refreshMut.mutate(), 3500);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buildQ.data?.status]);

@@ -152,8 +152,11 @@ function NewBuild() {
     setCreating(true);
     try {
       const { data: userData } = await supabase.auth.getUser();
-      const userId = userData.user!.id;
+      const user = userData.user;
+      if (!user) throw new Error("Sign in again before starting a build.");
+      const userId = user.id;
       const path = `${userId}/${crypto.randomUUID()}.zip`;
+      const diagnosticToken = `${crypto.randomUUID()}-${crypto.randomUUID()}`;
 
       const { error: upErr } = await supabase.storage
         .from("build-sources")
@@ -186,6 +189,7 @@ function NewBuild() {
           web_dir: result.webDir ?? null,
           logo_path: logoPath,
           node_version: nodeVersion,
+          diagnostic_token: diagnosticToken,
         })
         .select("id")
         .single();
@@ -193,7 +197,7 @@ function NewBuild() {
 
       toast.success(`Build queued. Dispatching to ${platform === "android" ? "GitHub" : "Codemagic"}…`);
       try {
-        await dispatchFn({ data: { buildId: build.id } });
+        await dispatchFn({ data: { buildId: build.id, appOrigin: window.location.origin } });
       } catch (e) {
         toast.error(`Dispatch failed: ${(e as Error).message}`);
       }
