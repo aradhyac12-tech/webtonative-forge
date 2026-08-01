@@ -287,7 +287,7 @@ jobs:
             .replaceAll('__APKFORGE_DIAGNOSTIC_TOKEN__', process.env.DIAGNOSTIC_TOKEN || '')
             .replaceAll('__APKFORGE_BUILD_ID__', process.env.BUILD_ID || '');
           const tag = '<script>' + script + '</script>';
-          html = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, tag + '\n</body>') : html + '\n' + tag;
+          html = /<\\/body>/i.test(html) ? html.replace(/<\\/body>/i, tag + '\\n</body>') : html + '\\n' + tag;
           fs.writeFileSync(indexPath, html);
           console.log('[oauth-diagnostics] Injected sanitized callback diagnostics into ' + indexPath);
           NODEEOF
