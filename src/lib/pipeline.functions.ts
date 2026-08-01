@@ -415,13 +415,15 @@ export const deleteBuild = createServerFn({ method: "POST" })
       }
     }
 
-    // Storage cleanup (best effort)
+    // Storage cleanup (best effort) — writes/deletes on build buckets are
+    // service-role only; ownership was verified above.
+    const { supabaseAdmin: storageAdmin } = await import("@/integrations/supabase/client.server");
     const paths: string[] = [];
     if (build.artifact_path) paths.push(build.artifact_path);
     if (paths.length) {
-      await supabase.storage.from("build-artifacts").remove(paths).catch(() => {});
+      await storageAdmin.storage.from("build-artifacts").remove(paths).catch(() => {});
     }
-    await supabase.storage.from("build-sources").remove([`${userId}/${build.id}.zip`]).catch(() => {});
+    await storageAdmin.storage.from("build-sources").remove([`${userId}/${build.id}.zip`]).catch(() => {});
 
     await supabase.from("build_logs").delete().eq("build_id", build.id);
     const { error: delErr } = await supabase.from("builds").delete().eq("id", build.id);
