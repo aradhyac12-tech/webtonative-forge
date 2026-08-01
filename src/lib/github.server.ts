@@ -352,11 +352,27 @@ export async function getArtifactDownload(
   return await apkFile.async("arraybuffer");
 }
 
+/** Names of the steps GitHub reports as failed, in run order. */
+async function failedStepNames(g: GH, repo: string, runId: number): Promise<string[]> {
+  const r = await gh<{
+    jobs: Array<{ steps?: Array<{ number: number; name: string; conclusion: string | null }> }>;
+  }>(g, `/repos/${g.login}/${repo}/actions/runs/${runId}/jobs`);
+  const out: string[] = [];
+  for (const job of r.body?.jobs ?? []) {
+    for (const s of job.steps ?? []) {
+      if (s.conclusion === "failure") out.push(`${s.number}_${s.name}`);
+    }
+  }
+  return out;
+}
+
 export async function getFailureTail(
   g: GH,
   repo: string,
   runId: number,
 ): Promise<{ tail: string; summary?: string }> {
+  const failedSteps = await failedStepNames(g, repo, runId).catch(() => [] as string[]);
+
   const res = await fetch(
     `${API}/repos/${g.login}/${repo}/actions/runs/${runId}/logs`,
     {
@@ -378,20 +394,40 @@ export async function getFailureTail(
     const entries = Object.values(zip.files).filter(
       (f) => !f.dir && f.name.toLowerCase().endsWith(".txt"),
     );
-    // Prefer the step file that carries an APKForge validation marker (the most
-    // actionable report), then any step with generic failure markers.
+
+    const norm = (s: string) => s.replace(/[^a-z0-9]+/gi, "").toLowerCase();
+
     let chosen: { name: string; text: string } | null = null;
-    let marked: { name: string; text: string } | null = null;
-    for (const f of entries) {
-      const text = await f.async("string");
-      if (/PREBUILD_VALIDATION_FAILED|SIGNING_VALIDATION_FAILED|APK_VERIFICATION_FAILED/.test(text)) {
-        marked = { name: f.name, text };
-      }
-      if (/FAILED|BUILD FAILED|Error: |error:|Exception|What went wrong/i.test(text)) {
-        chosen = { name: f.name, text };
+
+    // 1. Authoritative: the step GitHub itself marked as failed.
+    for (const stepName of failedSteps) {
+      const target = norm(stepName);
+      const match = entries.find((f) => {
+        const base = f.name.split("/").pop() ?? f.name;
+        return norm(base.replace(/\.txt$/i, "")) === target;
+      });
+      if (match) {
+        chosen = { name: match.name, text: await match.async("string") };
+        break;
       }
     }
-    chosen = marked ?? chosen;
+
+    // 2. Fallback heuristics only when the jobs API gave us nothing.
+    if (!chosen) {
+      let marked: { name: string; text: string } | null = null;
+      let generic: { name: string; text: string } | null = null;
+      for (const f of entries) {
+        const text = await f.async("string");
+        if (/PREBUILD_VALIDATION_FAILED:|SIGNING_VALIDATION_FAILED:|APK_VERIFICATION_FAILED:/.test(text)) {
+          marked = { name: f.name, text };
+        }
+        if (/BUILD FAILED|What went wrong|##\[error\]|Process completed with exit code [1-9]/i.test(text)) {
+          generic = { name: f.name, text };
+        }
+      }
+      chosen = marked ?? generic;
+    }
+
     if (!chosen && entries.length) {
       const last = entries[entries.length - 1];
       chosen = { name: last.name, text: await last.async("string") };
