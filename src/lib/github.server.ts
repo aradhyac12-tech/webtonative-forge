@@ -498,6 +498,8 @@ function summarizeFailure(text: string): string | undefined {
   if (/EACCES|permission denied/i.test(text)) return "Permission denied while building — check keystore/file permissions.";
   if (/ENOSPC|no space left on device/i.test(text)) return "GitHub runner ran out of disk space.";
   if (/npm ERR!.*(ETARGET|ENOTFOUND|EAI_AGAIN)/i.test(text)) return "npm dependency resolution failed on the runner.";
+  const javac = text.match(/^[^\n]*\.java:\d+:\s*error:\s*([^\n]+)/m);
+  if (javac?.[1]) return `Android Java compile error: ${javac[1].trim().slice(0, 200)}`;
   const gradle = text.match(/Execution failed for task '([^']+)'\.\s*\n?\s*>\s*([^\n]+)/);
   if (gradle) return `Gradle task ${gradle[1]} failed: ${gradle[2].trim().slice(0, 200)}`;
   return undefined;
