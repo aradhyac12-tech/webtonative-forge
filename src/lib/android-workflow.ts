@@ -625,7 +625,7 @@ jobs:
             '            for (String name : data.getQueryParameterNames()) {',
             '                String lower = name.toLowerCase();',
             '                if (lower.contains("token") || lower.contains("secret") || lower.contains("password") || lower.contains("refresh") || lower.contains("access")) continue;',
-            '                if (keys.length() > 0) keys.append(\',\');',
+            '                if (keys.length() > 0) keys.append(",");',
             '                keys.append(name);',
             '            }',
             '        } catch (Throwable ignored) {}',
