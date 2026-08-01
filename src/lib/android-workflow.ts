@@ -287,7 +287,7 @@ jobs:
             .replaceAll('__APKFORGE_DIAGNOSTIC_TOKEN__', process.env.DIAGNOSTIC_TOKEN || '')
             .replaceAll('__APKFORGE_BUILD_ID__', process.env.BUILD_ID || '');
           const tag = '<script>' + script + '</script>';
-          html = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, tag + '\n</body>') : html + '\n' + tag;
+          html = /<\\/body>/i.test(html) ? html.replace(/<\\/body>/i, tag + '\\n</body>') : html + '\\n' + tag;
           fs.writeFileSync(indexPath, html);
           console.log('[oauth-diagnostics] Injected sanitized callback diagnostics into ' + indexPath);
           NODEEOF
@@ -576,7 +576,7 @@ jobs:
           const fs = require('fs');
           const path = require('path');
           const report = process.env.REPORT;
-          const log = (m) => { console.log(m); fs.appendFileSync(report, m + '\n'); };
+          const log = (m) => { console.log(m); fs.appendFileSync(report, m + '\\n'); };
           function walk(dir) {
             const out = [];
             let entries = [];
@@ -592,7 +592,7 @@ jobs:
           if (!candidates.length) throw new Error('MainActivity.java was not found in the native Android project.');
           const mainPath = candidates[0];
           let main = fs.readFileSync(mainPath, 'utf8');
-          const pkg = (main.match(/^\s*package\s+([^;]+);/m) || [])[1];
+          const pkg = (main.match(/^\\s*package\\s+([^;]+);/m) || [])[1];
           if (!pkg) throw new Error('MainActivity.java has no package declaration.');
           const pkgDir = path.join('android/app/src/main/java', ...pkg.split('.'));
           const helperPath = path.join(pkgDir, 'ApkforgeOAuthDiagnostics.java');
@@ -633,11 +633,11 @@ jobs:
             '    }',
             '}',
             ''
-          ].join('\n'));
+          ].join('\\n'));
           function insertBeforeLastBrace(source, block) {
             const idx = source.lastIndexOf('}');
             if (idx < 0) throw new Error('MainActivity.java is malformed; missing class closing brace.');
-            return source.slice(0, idx) + block + '\n' + source.slice(idx);
+            return source.slice(0, idx) + block + '\\n' + source.slice(idx);
           }
           function injectIntoMethod(source, regex, line) {
             const match = regex.exec(source);
@@ -645,28 +645,28 @@ jobs:
             const open = source.indexOf('{', match.index);
             if (open < 0) return source;
             if (source.slice(open, open + 240).includes(line)) return source;
-            return source.slice(0, open + 1) + '\n        ' + line + source.slice(open + 1);
+            return source.slice(0, open + 1) + '\\n        ' + line + source.slice(open + 1);
           }
-          const needsBundle = /void\s+onCreate\s*\(/.test(main) && !/import\s+android\.os\.Bundle;/.test(main);
-          const needsIntent = /void\s+onNewIntent\s*\(/.test(main) && !/import\s+android\.content\.Intent;/.test(main);
+          const needsBundle = /void\\s+onCreate\\s*\\(/.test(main) && !/import\\s+android\\.os\\.Bundle;/.test(main);
+          const needsIntent = /void\\s+onNewIntent\\s*\\(/.test(main) && !/import\\s+android\\.content\\.Intent;/.test(main);
           if (needsBundle || needsIntent) {
-            main = main.replace(/(package\s+[^;]+;\s*)/, '$1\n' + (needsIntent ? 'import android.content.Intent;\n' : '') + (needsBundle ? 'import android.os.Bundle;\n' : ''));
+            main = main.replace(/(package\\s+[^;]+;\\s*)/, '$1\\n' + (needsIntent ? 'import android.content.Intent;\\n' : '') + (needsBundle ? 'import android.os.Bundle;\\n' : ''));
           }
           if (/ApkforgeOAuthDiagnostics/.test(main)) {
             log('[oauth-diagnostics] MainActivity lifecycle diagnostics already present');
           } else {
-            let patched = injectIntoMethod(main, /(?:public|protected)\s+void\s+onCreate\s*\([^)]*\)/, 'ApkforgeOAuthDiagnostics.logActivity("onCreate", this, getIntent());');
+            let patched = injectIntoMethod(main, /(?:public|protected)\\s+void\\s+onCreate\\s*\\([^)]*\\)/, 'ApkforgeOAuthDiagnostics.logActivity("onCreate", this, getIntent());');
             if (patched) main = patched;
-            else main = insertBeforeLastBrace(main, '\n    @Override\n    protected void onCreate(android.os.Bundle savedInstanceState) {\n        super.onCreate(savedInstanceState);\n        ApkforgeOAuthDiagnostics.logActivity("onCreate", this, getIntent());\n    }\n');
-            patched = injectIntoMethod(main, /(?:public|protected)\s+void\s+onNewIntent\s*\([^)]*\)/, 'ApkforgeOAuthDiagnostics.logActivity("onNewIntent", this, intent);');
+            else main = insertBeforeLastBrace(main, '\\n    @Override\\n    protected void onCreate(android.os.Bundle savedInstanceState) {\\n        super.onCreate(savedInstanceState);\\n        ApkforgeOAuthDiagnostics.logActivity("onCreate", this, getIntent());\\n    }\\n');
+            patched = injectIntoMethod(main, /(?:public|protected)\\s+void\\s+onNewIntent\\s*\\([^)]*\\)/, 'ApkforgeOAuthDiagnostics.logActivity("onNewIntent", this, intent);');
             if (patched) main = patched;
-            else main = insertBeforeLastBrace(main, '\n    @Override\n    protected void onNewIntent(android.content.Intent intent) {\n        super.onNewIntent(intent);\n        setIntent(intent);\n        ApkforgeOAuthDiagnostics.logActivity("onNewIntent", this, intent);\n    }\n');
-            patched = injectIntoMethod(main, /(?:public|protected)\s+void\s+onResume\s*\([^)]*\)/, 'ApkforgeOAuthDiagnostics.logActivity("onResume", this, getIntent());');
+            else main = insertBeforeLastBrace(main, '\\n    @Override\\n    protected void onNewIntent(android.content.Intent intent) {\\n        super.onNewIntent(intent);\\n        setIntent(intent);\\n        ApkforgeOAuthDiagnostics.logActivity("onNewIntent", this, intent);\\n    }\\n');
+            patched = injectIntoMethod(main, /(?:public|protected)\\s+void\\s+onResume\\s*\\([^)]*\\)/, 'ApkforgeOAuthDiagnostics.logActivity("onResume", this, getIntent());');
             if (patched) main = patched;
-            else main = insertBeforeLastBrace(main, '\n    @Override\n    protected void onResume() {\n        super.onResume();\n        ApkforgeOAuthDiagnostics.logActivity("onResume", this, getIntent());\n    }\n');
-            patched = injectIntoMethod(main, /(?:public|protected)\s+void\s+onDestroy\s*\([^)]*\)/, 'ApkforgeOAuthDiagnostics.logActivity("onDestroy", this, getIntent());');
+            else main = insertBeforeLastBrace(main, '\\n    @Override\\n    protected void onResume() {\\n        super.onResume();\\n        ApkforgeOAuthDiagnostics.logActivity("onResume", this, getIntent());\\n    }\\n');
+            patched = injectIntoMethod(main, /(?:public|protected)\\s+void\\s+onDestroy\\s*\\([^)]*\\)/, 'ApkforgeOAuthDiagnostics.logActivity("onDestroy", this, getIntent());');
             if (patched) main = patched;
-            else main = insertBeforeLastBrace(main, '\n    @Override\n    protected void onDestroy() {\n        ApkforgeOAuthDiagnostics.logActivity("onDestroy", this, getIntent());\n        super.onDestroy();\n    }\n');
+            else main = insertBeforeLastBrace(main, '\\n    @Override\\n    protected void onDestroy() {\\n        ApkforgeOAuthDiagnostics.logActivity("onDestroy", this, getIntent());\\n        super.onDestroy();\\n    }\\n');
             fs.writeFileSync(mainPath, main);
             log('[oauth-diagnostics] Injected Android lifecycle diagnostics into ' + mainPath);
           }
