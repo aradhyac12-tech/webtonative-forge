@@ -345,22 +345,47 @@ jobs:
           $CAP sync android || { log "[sync] First cap sync failed — retrying after npm install (auto-repair)"; npm install --no-audit --no-fund --legacy-peer-deps; $CAP sync android || fail "cap sync android failed. Native plugins could not be synchronized."; }
           log "[sync] cap sync android completed"
 
-          # Verify every installed Capacitor plugin got registered in the native project.
+          # Plugin verification happens ONLY after cap sync (never before).
+          PLUGINS_JSON="android/app/src/main/assets/capacitor.plugins.json"
+          if [ ! -f "$PLUGINS_JSON" ]; then
+            log "[sync] capacitor.plugins.json missing after sync — re-running cap sync (auto-repair)"
+            $CAP sync android || true
+          fi
+
           MISSING="$(node -e "
             const fs=require('fs');
             const p=JSON.parse(fs.readFileSync('package.json','utf8'));
             const deps=Object.keys({...(p.dependencies||{}),...(p.devDependencies||{})});
-            const plugins=deps.filter(d=>/^@capacitor\\//.test(d)&&!['@capacitor/core','@capacitor/cli','@capacitor/android','@capacitor/ios','@capacitor/assets'].includes(d));
+            const skip=['@capacitor/core','@capacitor/cli','@capacitor/android','@capacitor/ios','@capacitor/assets'];
+            const plugins=deps.filter(d=>(/^@capacitor\\//.test(d)||/^@capacitor-community\\//.test(d)||/^capacitor-/.test(d))&&!skip.includes(d));
             let reg='';
-            for (const f of ['android/capacitor.settings.gradle','android/app/capacitor.build.gradle']) { try { reg+=fs.readFileSync(f,'utf8'); } catch {} }
-            const missing=plugins.filter(pl=>!reg.includes(pl.replace('@capacitor/','capacitor-')) && !reg.includes(pl));
+            for (const f of ['android/capacitor.settings.gradle','android/app/capacitor.build.gradle','android/app/src/main/assets/capacitor.plugins.json']) { try { reg+=fs.readFileSync(f,'utf8'); } catch {} }
+            const missing=plugins.filter(pl=>!reg.includes(pl) && !reg.includes(pl.replace(/^@/,'').replace(/\\//g,'-')));
             console.log(missing.join(','));
           ")"
           if [ -n "$MISSING" ]; then
             log "[sync] Plugins not registered after first sync: $MISSING — re-syncing (auto-repair)"
-            $CAP sync android || fail "Plugin registration failed for: $MISSING"
+            $CAP sync android || true
+            MISSING2="$(node -e "
+              const fs=require('fs');
+              let reg='';
+              for (const f of ['android/capacitor.settings.gradle','android/app/capacitor.build.gradle','android/app/src/main/assets/capacitor.plugins.json']) { try { reg+=fs.readFileSync(f,'utf8'); } catch {} }
+              const list=process.argv[1].split(',').filter(Boolean);
+              console.log(list.filter(pl=>!reg.includes(pl)).join(','));
+            " "$MISSING")"
+            [ -z "$MISSING2" ] || fail "SYNC_VALIDATION_FAILED: these Capacitor plugins were not registered in the native Android project: $MISSING2"
           fi
-          log "[sync] Registered Capacitor plugins: $(node -e "const p=require('./package.json');console.log(Object.keys({...p.dependencies,...p.devDependencies}).filter(x=>x.includes('capacitor')).join(', ')||'none')")"
+
+          [ -f "$PLUGINS_JSON" ] || log "[sync] WARNING: no capacitor.plugins.json (project declares no native plugins)"
+          PLUGIN_LIST="$(node -e "
+            const p=require('./package.json');
+            const skip=['@capacitor/core','@capacitor/cli','@capacitor/android','@capacitor/ios','@capacitor/assets'];
+            const deps=Object.keys({...(p.dependencies||{}),...(p.devDependencies||{})});
+            console.log(deps.filter(d=>(/^@capacitor\\//.test(d)||/^@capacitor-community\\//.test(d)||/^capacitor-/.test(d))&&!skip.includes(d)).join(','));
+          ")"
+          log "[sync] Registered Capacitor plugins: \${PLUGIN_LIST:-none}"
+          echo "APKFORGE_PLUGINS=$PLUGIN_LIST" >> "$GITHUB_ENV"
+
 
       - name: Validate and repair native configuration
         working-directory: project
