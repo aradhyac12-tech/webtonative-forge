@@ -444,14 +444,18 @@ export async function getFailureTail(
 }
 
 function summarizeFailure(text: string): string | undefined {
-  const oauthRuntime = text.match(/OAUTH_RUNTIME_FAILED:\s*([^\n]+)/);
-  if (oauthRuntime?.[1]) return oauthRuntime[1].trim().slice(0, 240);
+  const sync = text.match(/SYNC_VALIDATION_FAILED:\s*([^\n]+)/);
+  if (sync?.[1]) return sync[1].trim().slice(0, 240);
   const prebuild = text.match(/PREBUILD_VALIDATION_FAILED:\s*([^\n]+)/);
   if (prebuild?.[1]) return prebuild[1].trim().slice(0, 240);
   const apkVerify = text.match(/APK_VERIFICATION_FAILED:\s*([^\n]+)/);
   if (apkVerify?.[1]) return apkVerify[1].trim().slice(0, 240);
   const signingFailure = text.match(/SIGNING_VALIDATION_FAILED:\s*([^\n]+)/i);
   if (signingFailure?.[1]) return signingFailure[1].trim().slice(0, 240);
+  if (/The web assets directory .* must contain an index\.html/i.test(text)) {
+    return "Capacitor's configured webDir had no index.html. The builder now repairs webDir automatically — re-run the build.";
+  }
+
   if (/Failed to install the following.*licences have not been accepted|You have not accepted the license agreements/i.test(text)) {
     return "Android SDK licences were not accepted on the runner. Re-run the build — the workflow now accepts them automatically.";
   }
