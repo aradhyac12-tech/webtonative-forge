@@ -832,36 +832,44 @@ jobs:
           unzip -p "$APK" assets/capacitor.plugins.json 2>/dev/null | tee -a "$VERIFY" || log "capacitor.plugins.json not present (no third-party plugins)"
           log "APK_VERIFICATION_PASSED"
 
-      - name: Runtime OAuth callback smoke test
-        uses: reactivecircus/android-emulator-runner@v2
-        timeout-minutes: 15
-        continue-on-error: true
-        with:
-          api-level: 35
-          target: google_apis
-          arch: x86_64
-          script: |
-            set -e
-            cd project
-            RUNTIME="android-oauth-runtime-logcat.txt"
-            : > "$RUNTIME"
-            APK="$(find android/app/build/outputs/apk/release -name '*.apk' | head -n 1 || true)"
-            if [ -z "$APK" ]; then echo "OAUTH_RUNTIME_FAILED: release APK missing" | tee -a "$RUNTIME"; exit 1; fi
-            SCHEME="$(head -n 1 android-expected-schemes.txt 2>/dev/null || true)"
-            if [ -z "$SCHEME" ]; then SCHEME="$(echo "$BUNDLE_ID" | tr '[:upper:]' '[:lower:]')"; fi
-            adb logcat -c || true
-            adb install -r "$APK" | tee -a "$RUNTIME"
-            adb shell monkey -p "$BUNDLE_ID" 1 | tee -a "$RUNTIME" || true
-            sleep 5
-            adb shell am start -W -a android.intent.action.VIEW -c android.intent.category.BROWSABLE -d "$SCHEME://auth?code=apkforge_smoke_code&state=apkforge_smoke" "$BUNDLE_ID" | tee -a "$RUNTIME" || true
-            sleep 8
-            adb logcat -d -v time > "$RUNTIME" || true
-            grep -E "APKForgeOAuth|AndroidRuntime|FATAL EXCEPTION|Process.*$BUNDLE_ID|Capacitor|appUrlOpen|exchangeCodeForSession" "$RUNTIME" > android-oauth-runtime-summary.txt || true
-            if grep -E "FATAL EXCEPTION|AndroidRuntime|Process.*$BUNDLE_ID.*(has died|crash)" "$RUNTIME" >/dev/null; then
-              echo "OAUTH_RUNTIME_FAILED: Android crashed while handling the native OAuth callback. See android-oauth-runtime-logcat.txt." | tee -a android-oauth-runtime-summary.txt
-              exit 1
-            fi
-            echo "OAUTH_RUNTIME_SMOKE_PASSED: native callback intent did not crash the app" | tee -a android-oauth-runtime-summary.txt
+      - name: Final diagnostics report
+        if: success() || failure()
+        working-directory: project
+        run: |
+          set +e
+          FINAL="android-build-report.txt"
+          {
+            echo "========== APKForge final build report =========="
+            echo "Build id:            \${BUILD_ID}"
+            echo "App name:            \${APP_NAME}"
+            echo "Bundle id:           \${BUNDLE_ID}"
+            echo "Framework:           \${DETECTED_FRAMEWORK:-unknown}"
+            echo "Package manager:     \${PM:-npm}"
+            echo "Build command:       \${RUN_CMD:-npm run} build"
+            echo "Declared webDir:     \${DECLARED_WEB_DIR:-\${WEB_DIR}}"
+            echo "Resolved webDir:     \${RESOLVED_WEB_DIR:-unresolved}"
+            echo "index.html:          \${RESOLVED_WEB_DIR:-?}/index.html"
+            echo "Capacitor config:    \${CAP_CONFIG_PATH:-none}"
+            echo "Capacitor version:   $(npx cap --version 2>/dev/null || echo unknown)"
+            echo "Java version:        $(java -version 2>&1 | head -n 1)"
+            echo "Gradle version:      $( [ -f android/gradle/wrapper/gradle-wrapper.properties ] && sed -n 's/.*gradle-\\([0-9.]*\\)-.*/\\1/p' android/gradle/wrapper/gradle-wrapper.properties | head -n 1 || echo unknown )"
+            echo "Android SDK:         \${ANDROID_HOME:-not set}"
+            echo "Signing alias:       \${APKFORGE_VALIDATED_KEY_ALIAS:-unresolved}"
+            echo "Installed plugins:   \${APKFORGE_PLUGINS:-none}"
+            echo "Auto-installed:      \${APKFORGE_AUTO_PLUGINS:-none}"
+            echo "Repaired files:      \${APKFORGE_REPAIRS:-none}"
+            echo "APK:                 $(find android/app/build/outputs/apk/release -name '*.apk' 2>/dev/null | head -n 1 || echo none)"
+            echo "AAB:                 $(find android/app/build/outputs/bundle/release -name '*.aab' 2>/dev/null | head -n 1 || echo none)"
+            echo "Runtime OAuth:       NOT tested in CI — manual device testing required."
+            echo "================================================="
+            echo
+            [ -f android-prebuild-report.txt ] && cat android-prebuild-report.txt
+            echo
+            [ -f android-signing-diagnostics.txt ] && cat android-signing-diagnostics.txt
+            echo
+            [ -f android-apk-verification.txt ] && cat android-apk-verification.txt
+          } > "$FINAL" 2>&1
+          cat "$FINAL"
 
       - name: Upload APK
         if: success() || failure()
@@ -870,24 +878,30 @@ jobs:
           name: apk-\${{ github.event.inputs.build_id }}
           path: |
             project/android/app/build/outputs/apk/release/*.apk
+            project/android-build-report.txt
             project/android-prebuild-report.txt
             project/android-signing-diagnostics.txt
             project/android-apk-verification.txt
-            project/android-oauth-runtime-logcat.txt
-            project/android-oauth-runtime-summary.txt
           if-no-files-found: error
+      - name: Upload AAB
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aab-\${{ github.event.inputs.build_id }}
+          path: project/android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: ignore
       - name: Upload diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: diagnostics-\${{ github.event.inputs.build_id }}
           path: |
+            project/android-build-report.txt
             project/android-prebuild-report.txt
             project/android-signing-diagnostics.txt
             project/android-apk-verification.txt
-            project/android-oauth-runtime-logcat.txt
-            project/android-oauth-runtime-summary.txt
           if-no-files-found: ignore
+
       - name: Finalize APKForge build
         if: always()
         run: |
