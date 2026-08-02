@@ -293,6 +293,95 @@ jobs:
           NODEEOF
           log "[oauth-diagnostics] Sanitized runtime diagnostics injected"
 
+      - name: Repair Capacitor configuration (webDir)
+        working-directory: project
+        run: |
+          set -e
+          log() { echo "$1" | tee -a "$REPORT"; }
+          fail() { echo "PREBUILD_VALIDATION_FAILED: $1" | tee -a "$REPORT"; echo "::error::$1"; exit 1; }
+          CAP="npx cap"
+
+          if [ ! -f "$RESOLVED_WEB_DIR/index.html" ]; then
+            fail "No index.html in the resolved web directory ('$RESOLVED_WEB_DIR'). The web build did not produce usable assets."
+          fi
+
+          CFG=""
+          for f in capacitor.config.ts capacitor.config.js capacitor.config.mjs capacitor.config.cjs capacitor.config.json; do
+            if [ -z "$CFG" ] && [ -f "$f" ]; then CFG="$f"; fi
+          done
+          if [ -z "$CFG" ]; then
+            log "[config] No capacitor config — running cap init (auto-repair)"
+            $CAP init "$APP_NAME" "$BUNDLE_ID" --web-dir="$RESOLVED_WEB_DIR" || fail "capacitor init failed for bundle id $BUNDLE_ID."
+            for f in capacitor.config.ts capacitor.config.js capacitor.config.mjs capacitor.config.cjs capacitor.config.json; do
+              if [ -z "$CFG" ] && [ -f "$f" ]; then CFG="$f"; fi
+            done
+          fi
+          [ -n "$CFG" ] || fail "Capacitor config could not be created."
+          log "[config] Capacitor config: $CFG"
+
+          cat > /tmp/apkforge-fix-webdir.cjs <<'NODEEOF'
+          const fs = require('fs');
+          const file = process.argv[2];
+          const web = process.argv[3];
+          let src = fs.readFileSync(file, 'utf8');
+          let declared = null;
+          let repaired = false;
+          if (file.endsWith('.json')) {
+            const j = JSON.parse(src);
+            declared = j.webDir || null;
+            if (declared !== web) { j.webDir = web; fs.writeFileSync(file, JSON.stringify(j, null, 2)); repaired = true; }
+          } else {
+            const m = src.match(/webDir\\s*:\\s*['"\\\`]([^'"\\\`]+)['"\\\`]/);
+            declared = m ? m[1] : null;
+            if (m && declared !== web) {
+              src = src.replace(/webDir\\s*:\\s*['"\\\`][^'"\\\`]+['"\\\`]/, "webDir: '" + web + "'");
+              fs.writeFileSync(file, src); repaired = true;
+            } else if (!m) {
+              const anchor = src.match(/appId\\s*:\\s*['"\\\`][^'"\\\`]+['"\\\`]\\s*,/);
+              if (anchor) {
+                src = src.replace(anchor[0], anchor[0] + "\\n  webDir: '" + web + "',");
+                fs.writeFileSync(file, src); repaired = true;
+              }
+            }
+          }
+          console.log('[config] Declared webDir: ' + (declared || 'none'));
+          console.log('[config] Resolved webDir: ' + web);
+          console.log(repaired ? '[config] webDir repaired automatically' : '[config] webDir already correct');
+          const env = process.env.GITHUB_ENV;
+          if (env) {
+            fs.appendFileSync(env, 'DECLARED_WEB_DIR=' + (declared || '') + '\\n');
+            if (repaired) fs.appendFileSync(env, 'APKFORGE_REPAIRS=' + ((process.env.APKFORGE_REPAIRS ? process.env.APKFORGE_REPAIRS + ',' : '') + file) + '\\n');
+          }
+          NODEEOF
+          node /tmp/apkforge-fix-webdir.cjs "$CFG" "$RESOLVED_WEB_DIR" | tee -a "$REPORT"
+          echo "CAP_CONFIG_PATH=$CFG" >> "$GITHUB_ENV"
+
+      - name: Ensure required Capacitor plugins
+        working-directory: project
+        run: |
+          set -e
+          log() { echo "$1" | tee -a "$REPORT"; }
+          CORE_MAJ="$(node -e "try{console.log(require('@capacitor/core/package.json').version.split('.')[0])}catch(e){console.log('')}")"
+          ADDED=""
+          for p in browser app haptics camera filesystem preferences push-notifications network geolocation; do
+            PKG="@capacitor/$p"
+            if node -e "const d=require('./package.json');const a={...(d.dependencies||{}),...(d.devDependencies||{})};process.exit(a['$PKG']?0:1)" 2>/dev/null; then
+              continue
+            fi
+            if grep -rIlF --exclude-dir=node_modules --exclude-dir=android --exclude-dir=ios --exclude-dir=.git "$PKG" . >/dev/null 2>&1; then
+              SPEC="$PKG"
+              if [ -n "$CORE_MAJ" ]; then SPEC="$PKG@^$CORE_MAJ"; fi
+              if npm i "$SPEC" --no-audit --no-fund >/dev/null 2>&1 || npm i "$PKG" --no-audit --no-fund >/dev/null 2>&1; then
+                ADDED="$ADDED $PKG"
+                log "[plugins] Auto-installed missing plugin used by the project: $PKG"
+              else
+                log "[plugins] WARNING: could not auto-install $PKG"
+              fi
+            fi
+          done
+          if [ -z "$ADDED" ]; then log "[plugins] No missing Capacitor plugins detected"; fi
+          echo "APKFORGE_AUTO_PLUGINS=$(echo $ADDED | tr ' ' ',')" >> "$GITHUB_ENV"
+
       - name: Generate or repair native Android project
         working-directory: project
         run: |
@@ -301,19 +390,26 @@ jobs:
           fail() { echo "PREBUILD_VALIDATION_FAILED: $1" | tee -a "$REPORT"; echo "::error::$1"; exit 1; }
           CAP="npx cap"
 
-          if [ ! -f capacitor.config.ts ] && [ ! -f capacitor.config.js ] && [ ! -f capacitor.config.json ]; then
-            log "[native] No capacitor config — running cap init (auto-repair)"
-            $CAP init "$APP_NAME" "$BUNDLE_ID" --web-dir="$RESOLVED_WEB_DIR" || fail "capacitor init failed for bundle id $BUNDLE_ID."
-          fi
-
           if [ -d android ] && { [ ! -f android/gradlew ] || [ ! -f android/app/src/main/AndroidManifest.xml ] || [ ! -f android/capacitor.settings.gradle ]; }; then
             log "[native] Existing android/ project is incomplete — regenerating (auto-repair)"
             rm -rf android
           fi
           if [ ! -d android ]; then
             log "[native] Adding Android platform (cap add android)"
-            $CAP add android || fail "cap add android failed — the project could not be converted to a native Android project."
+            # cap add runs copy+update internally; webDir was repaired in the
+            # previous step so copy has real assets to work with. Plugin state
+            # (capacitor.plugins.json) is NOT inspected here — only after cap sync.
+            if ! $CAP add android; then
+              if [ -f android/gradlew ] && [ -f android/app/src/main/AndroidManifest.xml ]; then
+                log "[native] cap add reported an error but the native project scaffold exists — continuing, cap sync will repair it"
+              else
+                fail "cap add android failed — the native Android project could not be generated (webDir '$RESOLVED_WEB_DIR')."
+              fi
+            fi
           fi
+          [ -f android/gradlew ] || fail "Native Android project is missing android/gradlew after generation."
+          log "[native] Native Android project ready"
+
 
       - name: Sync icons and Capacitor plugins
         working-directory: project
