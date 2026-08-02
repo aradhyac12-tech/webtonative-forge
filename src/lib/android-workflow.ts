@@ -829,8 +829,20 @@ jobs:
 
           unzip -l "$APK" | grep -q "assets/public/index.html" || fail "Web assets are missing from the APK (assets/public/index.html not found)."
           log "Web assets: bundled"
-          unzip -p "$APK" assets/capacitor.plugins.json 2>/dev/null | tee -a "$VERIFY" || log "capacitor.plugins.json not present (no third-party plugins)"
+          if [ -n "\${APKFORGE_PLUGINS:-}" ]; then
+            unzip -p "$APK" assets/capacitor.plugins.json > /tmp/apk-plugins.json 2>/dev/null || fail "capacitor.plugins.json is missing from the packaged APK — Capacitor plugins were not bundled."
+            cat /tmp/apk-plugins.json | tee -a "$VERIFY"
+            MISSING_IN_APK=""
+            for p in $(echo "$APKFORGE_PLUGINS" | tr ',' ' '); do
+              grep -q "\\"$p\\"" /tmp/apk-plugins.json || MISSING_IN_APK="$MISSING_IN_APK $p"
+            done
+            [ -z "$MISSING_IN_APK" ] || fail "These Capacitor plugins are missing from the packaged APK:$MISSING_IN_APK"
+            log "Packaged plugins: verified"
+          else
+            log "No Capacitor plugins declared — skipping packaged plugin check"
+          fi
           log "APK_VERIFICATION_PASSED"
+
 
       - name: Final diagnostics report
         if: success() || failure()
