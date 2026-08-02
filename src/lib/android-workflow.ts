@@ -151,20 +151,38 @@ jobs:
           else
             log "[web] No build script — using shipped web assets"
           fi
-          # Resolve the real web output dir.
-          RESOLVED="$WEB_DIR"
-          if [ ! -f "$RESOLVED/index.html" ]; then
-            for c in dist build out www public dist/spa .output/public; do
-              if [ -f "$c/index.html" ]; then RESOLVED="$c"; break; fi
+          # Resolve the real web output dir (never assume).
+          RESOLVED=""
+          if [ -n "\${WEB_DIR:-}" ] && [ -f "$WEB_DIR/index.html" ]; then RESOLVED="$WEB_DIR"; fi
+          if [ -z "$RESOLVED" ]; then
+            for c in dist build out www public .output/public dist/spa dist/browser build/client .svelte-kit/output/client .nuxt/dist/client app/build; do
+              if [ -z "$RESOLVED" ] && [ -f "$c/index.html" ]; then RESOLVED="$c"; fi
             done
           fi
-          if [ ! -f "$RESOLVED/index.html" ]; then
-            mkdir -p "$RESOLVED"
-            echo "<!doctype html><html><body><h1>$APP_NAME</h1></body></html>" > "$RESOLVED/index.html"
-            log "[web] No web output found — generated a placeholder index.html in $RESOLVED (auto-repair)"
+          if [ -z "$RESOLVED" ]; then
+            for c in $(ls -d dist/*/browser dist/*/ build/*/ 2>/dev/null); do
+              if [ -z "$RESOLVED" ] && [ -f "\${c%/}/index.html" ]; then RESOLVED="\${c%/}"; fi
+            done
+          fi
+          if [ -z "$RESOLVED" ]; then
+            CANDIDATE="$(find . -maxdepth 3 -name index.html -not -path './node_modules/*' -not -path './android/*' -not -path './ios/*' -not -path './src/*' 2>/dev/null | head -n 1)"
+            if [ -n "$CANDIDATE" ]; then RESOLVED="$(dirname "$CANDIDATE")"; RESOLVED="\${RESOLVED#./}"; fi
+          fi
+          if [ -z "$RESOLVED" ]; then
+            log "PREBUILD_VALIDATION_FAILED: No web build output containing index.html could be found."
+            log "  Framework detected: \${DETECTED_FRAMEWORK:-unknown}"
+            log "  Package manager:    \${PM:-npm}"
+            log "  Build command run:  \${RUN_CMD:-npm run} build"
+            log "  Configured webDir:  \${WEB_DIR:-none}"
+            log "  Directories probed: dist build out www public .output/public dist/spa dist/browser build/client .svelte-kit/output/client .nuxt/dist/client"
+            log "  Project root contents:"
+            ls -la | tee -a "$REPORT"
+            echo "::error::No web build output containing index.html was produced. Check the build script and web output directory."
+            exit 1
           fi
           log "[web] Web directory: $RESOLVED"
           echo "RESOLVED_WEB_DIR=$RESOLVED" >> "$GITHUB_ENV"
+
 
       - name: Inject OAuth callback diagnostics
         working-directory: project
