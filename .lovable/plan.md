@@ -1,55 +1,56 @@
+# Universal Android build pipeline hardening
+
+## What's actually breaking
+
+The last build failed at step 9 ("Generate or repair native Android project") for a project whose `capacitor.config` declares `webDir: ".output/public"`, while the real build output was `public`:
+
+```text
+[error] The web assets directory (./.output/public) must contain an index.html file.
+[error] ENOENT: .../android/app/src/main/assets/capacitor.plugins.json
+PREBUILD_VALIDATION_FAILED: cap add android failed
+```
+
+Confirmed causes in `src/lib/android-workflow.ts`:
+
+1. The "Build web assets" step resolves the real output directory into `RESOLVED_WEB_DIR`, but nothing ever writes that value back into an existing `capacitor.config.*`. `cap init --web-dir` only runs when no config exists, so a wrong `webDir` is never repaired.
+2. Because `cap add android` internally runs copy+update, the copy failure cascades into the `capacitor.plugins.json` ENOENT — plugin state is being observed at the wrong moment (during `add`, not after `sync`).
+3. The "Runtime OAuth callback smoke test" step boots an Android emulator and timed out after 15 minutes. CI must not perform runtime auth/device testing.
+4. No AAB is produced; only `assembleRelease`.
+
 ## Plan
 
-### 1. Keep Android OAuth scope isolated
-- Do not change UI, web Google OAuth, backend redirect allow-list values, or unrelated auth code.
-- Treat `duospace://auth` as the expected native callback and only diagnose/repair Android callback handling and build output.
+### 1. Repair `capacitor.config` webDir (new step, before native generation)
+- Detect the config file (`.ts` / `.js` / `.json`), read its declared `webDir`.
+- If the declared dir has no `index.html` and `RESOLVED_WEB_DIR` does, rewrite the `webDir` value in place (regex for TS/JS, JSON parse+write for JSON) and log the before/after.
+- Create the config via `cap init` when missing, using `RESOLVED_WEB_DIR`.
+- Hard-verify `RESOLVED_WEB_DIR/index.html` exists and abort with a precise message before any `cap` command touches it.
 
-### 2. Add Android OAuth crash diagnostics to the generated APK/build
-- Extend the Android workflow to scan the uploaded project for:
-  - `AndroidManifest.xml`, `MainActivity`, Capacitor App plugin registration
-  - `App.addListener('appUrlOpen')`
-  - `Auth.tsx`, auth callback/redirect files, and `exchangeCodeForSession()` usage when present in the uploaded source
-  - backend client initialization and session persistence keys, without printing token values
-- Inject build-time-only sanitized diagnostics into the generated release APK:
-  - native Activity lifecycle breadcrumbs: create/start/resume/newIntent/pause/stop/destroy
-  - callback URL breadcrumbs: scheme/host/path and param names only, never OAuth codes/access/refresh tokens
-  - JS error/unhandled rejection capture around callback processing
-  - duplicate callback detection
-  - session persistence success/failure markers
-  - navigation/reload markers after the callback
-- Add an Android release smoke probe in the workflow:
-  - build the actual release APK
-  - install it on an emulator
-  - start the app, record PID/process state
-  - fire the native callback intent with a sanitized test URL shaped like `duospace://auth?code=...`
-  - capture logcat, ActivityManager, Chromium/WebView, Capacitor, and crash/tombstone lines
-  - verify whether the process restarts, the callback fires once, and the WebView remains alive
-- Store the result as `android-oauth-runtime-report.txt` and include its key failure line in the build failure summary.
+### 2. Stop generating a placeholder index.html
+Current fallback fabricates an empty page, which produces a blank-screen APK. Replace with an abort listing: framework detected, build command run, directories probed, and directory listing of the project root.
 
-### 3. Capture real-device Google OAuth callback diagnostics safely
-- Add a public runtime diagnostic endpoint that accepts only sanitized callback-stage events for a build and writes them into that build’s logs.
-- The injected diagnostics will post stages such as `appUrlOpen`, `exchange-start`, `exchange-error`, `session-persisted`, `navigation`, `unhandledrejection`, or `activity-recreated`.
-- It will never send full callback URLs, OAuth codes, access tokens, refresh tokens, cookies, or auth headers.
-- This lets the next DuoSpace APK run report the exact stage/exception from the real Google account-selection flow, instead of guessing from TypeScript checks.
+### 3. Broaden webDir detection
+Extend the candidate list with framework-aware ordering: `.output/public` (Nuxt), `.next` export/`out` (Next), `dist/browser` and `dist/<app>/browser` (Angular), `build/client` (Remix/TanStack), `.svelte-kit/output/client`, plus existing `dist build out www public dist/spa`. Also do a bounded `find` for any `index.html` no deeper than 3 levels, excluding `node_modules`/`android`/`ios`, as the last resort before failing.
 
-### 4. Make build status update even when the website is closed
-- Add a `/api/public/.../finalize` endpoint for GitHub Actions completion.
-- The workflow will call it at the end of every Android run.
-- The endpoint will not trust the caller’s status blindly; it will verify the stored build row, repo, run id, and run name through GitHub before updating the database.
-- On success it finalizes the artifact immediately; on failure it downloads logs and writes the actionable summary.
-- Keep the existing manual refresh path as a fallback.
-- Reduce visible delay in the app by invalidating/refetching status more aggressively and using backend-driven completion instead of waiting for the user to keep the page open.
+### 4. Correct plugin verification timing
+- Remove any plugin/`capacitor.plugins.json` expectation from the `cap add` step; treat `add` failures separately from `copy` failures by running `cap add android` alone, then `cap sync android`.
+- After `cap sync android`: require `android/app/src/main/assets/capacitor.plugins.json` to exist and to list every `@capacitor/*` and `@capacitor-community/*` dependency; report the exact missing plugin names on failure.
+- Re-verify packaged plugins inside the built APK (unzip `assets/capacitor.plugins.json`) in the existing verification step.
 
-### 5. Store only APK/IPA as downloadable artifacts
-- Split GitHub artifacts so diagnostics are separate from the APK artifact.
-- Update Android artifact handling to extract the actual `.apk` from the GitHub artifact ZIP and store only `<build-id>.apk` in build storage.
-- Keep diagnostic reports in logs/diagnostic artifacts, not as the user’s download.
-- Keep iOS downloads as `.ipa` only and verify no ZIP wrapper is exposed.
+### 5. Auto-install commonly required plugins
+Scan the source for usage of Browser, App, Haptics, Camera, Filesystem, Preferences, Push Notifications, Network, Geolocation; install any that are used but not declared in `package.json`, matching the installed `@capacitor/core` major version so no version mismatch occurs.
 
-### 6. Verification before claiming fixed
-- Validate the generated workflow syntax and embedded shell scripts.
-- Trigger a new DuoSpace Android release build.
-- Confirm the app stores/downloads a real `.apk`, not a ZIP.
-- Confirm the build reaches success/failure without the website staying open.
-- Review the generated OAuth runtime report/logcat output.
-- If the Google callback still terminates the process, use the captured exception/stage to fix that exact crash rather than changing redirect URLs blindly.
+### 6. Remove runtime OAuth device testing from CI
+Delete the `reactivecircus/android-emulator-runner` smoke-test step. Keep all static/compile-time OAuth work (manifest intent filters, launchMode, scheme/host registration, `MainActivity` handling, Browser plugin presence) and record in the diagnostics report that runtime OAuth is manual device testing.
+
+### 7. Deep-link and OAuth checks stay non-destructive
+Verification only — `launchMode="singleTask"`, VIEW/DEFAULT/BROWSABLE, `exported="true"`, scheme+host present, Browser plugin registered. Existing custom schemes, hosts, and callback URLs are preserved; missing pieces are added, existing pieces are never overwritten.
+
+### 8. Build AAB alongside APK
+Run `bundleRelease` with the same injected signing properties, upload the `.aab` as a separate artifact, and keep the APK as the primary download.
+
+### 9. Diagnostics report
+Emit one `android-build-report.txt` containing: framework, package manager, build command, declared vs resolved webDir, index.html path, capacitor config path, Capacitor/Gradle/Java/SDK versions, installed vs missing plugins, repaired files, signing status and resolved alias, APK/AAB signature verification, and artifact locations. Upload it on both success and failure.
+
+## Technical notes
+
+All changes are confined to `src/lib/android-workflow.ts` (the generated GitHub Actions YAML) plus the failure-summary patterns in `src/lib/github.server.ts` so `PREBUILD_VALIDATION_FAILED:` / `SYNC_VALIDATION_FAILED:` messages surface verbatim in the site UI. No UI, schema, or business-logic changes. The generated YAML will be validated locally (YAML parse + `bash -n` on every step) before finishing.
