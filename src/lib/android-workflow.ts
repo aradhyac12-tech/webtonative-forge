@@ -103,11 +103,43 @@ jobs:
             INSTALL_CMD="yarn install"; RUN_CMD="yarn"; EXEC_CMD="yarn"
           fi
           log "[detect] Package manager: $PM"
+
+          FRAMEWORK="$(node -e "
+            const p=require('./package.json');
+            const d={...(p.dependencies||{}),...(p.devDependencies||{})};
+            const has=(k)=>Object.prototype.hasOwnProperty.call(d,k);
+            let f='static-web';
+            if (has('next')) f='next';
+            else if (has('nuxt')||has('nuxt3')) f='nuxt';
+            else if (has('@angular/core')) f='angular';
+            else if (has('@sveltejs/kit')) f='sveltekit';
+            else if (has('svelte')) f='svelte';
+            else if (has('@tanstack/react-start')||has('@tanstack/start')) f='tanstack-start';
+            else if (has('@remix-run/react')) f='remix';
+            else if (has('@ionic/react')||has('@ionic/vue')||has('@ionic/angular')) f='ionic';
+            else if (has('vue')) f='vue';
+            else if (has('vite')) f='vite';
+            else if (has('react')) f='react';
+            console.log(f);
+          " 2>/dev/null || echo static-web)"
+          log "[detect] Framework: $FRAMEWORK"
+          if [ -f config.xml ] && grep -qi "<widget" config.xml 2>/dev/null; then
+            log "[detect] Cordova project detected — it will be migrated to a Capacitor native project"
+          fi
+          if [ -f capacitor.config.ts ] || [ -f capacitor.config.js ] || [ -f capacitor.config.json ]; then
+            log "[detect] Capacitor config present"
+          else
+            log "[detect] No Capacitor config — one will be generated"
+          fi
+          if [ -d android ]; then log "[detect] Existing android/ project present"; else log "[detect] No android/ project — it will be generated"; fi
+
           {
             echo "PM=$PM"
             echo "RUN_CMD=$RUN_CMD"
             echo "EXEC_CMD=$EXEC_CMD"
+            echo "DETECTED_FRAMEWORK=$FRAMEWORK"
           } >> "$GITHUB_ENV"
+
 
           if $INSTALL_CMD; then
             log "[install] Dependencies installed with $PM"
