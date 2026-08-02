@@ -768,12 +768,20 @@ jobs:
           chmod +x ./gradlew
           ./gradlew --version | sed -n '1,8p' | tee -a "$REPORT"
           ./gradlew --no-daemon clean
-          SIGN_ARGS="-Pandroid.injected.signing.store.file=\${{ github.workspace }}/project/android/app/release.keystore \\
-            -Pandroid.injected.signing.store.password=\${{ secrets.APKFORGE_KEYSTORE_PASSWORD }} \\
-            -Pandroid.injected.signing.key.alias=$APKFORGE_VALIDATED_KEY_ALIAS \\
-            -Pandroid.injected.signing.key.password=\${{ secrets.APKFORGE_KEY_PASSWORD }}"
-          ./gradlew --no-daemon assembleRelease $SIGN_ARGS
-          ./gradlew --no-daemon bundleRelease $SIGN_ARGS || echo "::warning::AAB (bundleRelease) could not be produced; APK is unaffected."
+          KS_PASS="\${{ secrets.APKFORGE_KEYSTORE_PASSWORD }}"
+          KEY_PASS="\${{ secrets.APKFORGE_KEY_PASSWORD }}"
+          KS_FILE="\${{ github.workspace }}/project/android/app/release.keystore"
+          gradle_release() {
+            ./gradlew --no-daemon "$1" \\
+              -Pandroid.injected.signing.store.file="$KS_FILE" \\
+              -Pandroid.injected.signing.store.password="$KS_PASS" \\
+              -Pandroid.injected.signing.key.alias="$APKFORGE_VALIDATED_KEY_ALIAS" \\
+              -Pandroid.injected.signing.key.password="$KEY_PASS"
+          }
+          gradle_release assembleRelease
+          gradle_release bundleRelease || echo "::warning::AAB (bundleRelease) could not be produced; APK is unaffected."
+
+
 
 
       - name: Verify release APK
