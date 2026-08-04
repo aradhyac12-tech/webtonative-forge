@@ -169,6 +169,128 @@ jobs:
           npm i @capacitor/android >/dev/null 2>&1 || npm i @capacitor/android || fail "Could not install @capacitor/android."
           log "[capacitor] Version: $(npx cap --version 2>/dev/null || echo unknown)"
 
+      - name: Verify dependencies and toolchain
+        working-directory: project
+        run: |
+          set -e
+          log() { echo "$1" | tee -a "$REPORT"; }
+          fail() { echo "PREBUILD_VALIDATION_FAILED: DEPENDENCY_VALIDATION_FAILED: $1" | tee -a "$REPORT"; echo "::error::$1"; exit 1; }
+          log "== Dependency verification =="
+
+          missing_list() {
+            node -e "
+              const fs=require('fs');
+              const p=JSON.parse(fs.readFileSync('package.json','utf8'));
+              const deps=Object.keys({...(p.dependencies||{}),...(p.devDependencies||{})});
+              const missing=deps.filter(function(d){ try { fs.accessSync('node_modules/'+d+'/package.json'); return false; } catch (e) { return true; } });
+              console.log(missing.join(' '));
+            " 2>/dev/null
+          }
+
+          MISSING="$(missing_list)"
+          if [ -n "$MISSING" ]; then
+            log "[deps] Missing from node_modules:$MISSING"
+            log "[deps] Repair attempt 1 — installing the missing packages with \${PM:-npm}"
+            case "\${PM:-npm}" in
+              bun) bun add $MISSING || true ;;
+              pnpm) pnpm add $MISSING || true ;;
+              yarn) yarn add $MISSING || true ;;
+              *) npm i $MISSING --no-audit --no-fund || true ;;
+            esac
+            MISSING="$(missing_list)"
+          fi
+          if [ -n "$MISSING" ]; then
+            log "[deps] Repair attempt 2 — full reinstall with npm --legacy-peer-deps"
+            npm install --no-audit --no-fund --legacy-peer-deps || true
+            MISSING="$(missing_list)"
+          fi
+          [ -z "$MISSING" ] || fail "These declared packages are still not installed after two repair attempts:$MISSING"
+          log "[deps] All declared dependencies and devDependencies resolve inside node_modules"
+
+          # Health check (missing / invalid / duplicated / peer-incompatible).
+          case "\${PM:-npm}" in
+            bun) bun pm ls > /tmp/dep-health.txt 2>&1 || true ;;
+            pnpm) pnpm list --depth 1 > /tmp/dep-health.txt 2>&1 || true ;;
+            yarn) yarn list --depth=1 > /tmp/dep-health.txt 2>&1 || true ;;
+            *) npm ls --all --json > /tmp/dep-health.json 2>/dev/null || true ;;
+          esac
+          if [ -s /tmp/dep-health.json ]; then
+            node -e "
+              const fs=require('fs');
+              let tree; try { tree=JSON.parse(fs.readFileSync('/tmp/dep-health.json','utf8')); } catch (e) { console.log('[deps] health: npm ls output unparsable'); process.exit(0); }
+              const problems=[]; const versions={};
+              (function walk(node, path){
+                const deps=node.dependencies||{};
+                for (const name of Object.keys(deps)) {
+                  const d=deps[name]; const here=path+' > '+name;
+                  if (d.missing) problems.push('MISSING '+here);
+                  if (d.invalid) problems.push('INVALID '+here+' ('+(d.invalid===true?'version conflict':d.invalid)+')');
+                  for (const pr of (d.problems||[])) problems.push('PROBLEM '+here+': '+String(pr).slice(0,160));
+                  if (d.version) { versions[name]=versions[name]||new Set(); versions[name].add(d.version); }
+                  walk(d, here);
+                }
+              })(tree, 'root');
+              const dups=Object.keys(versions).filter(function(k){return versions[k].size>1;});
+              console.log('[deps] health problems: '+(problems.length||'none'));
+              problems.slice(0,40).forEach(function(p){ console.log('  '+p); });
+              console.log('[deps] duplicated packages (multiple versions): '+(dups.length?dups.slice(0,25).join(', '):'none'));
+            " | tee -a "$REPORT"
+          elif [ -f /tmp/dep-health.txt ]; then
+            head -n 40 /tmp/dep-health.txt | tee -a "$REPORT"
+          fi
+
+          # Capacitor package presence + major-version compatibility.
+          node -e "
+            const fs=require('fs');
+            const read=function(p){ try { return JSON.parse(fs.readFileSync(p,'utf8')); } catch (e) { return null; } };
+            const pkg=read('package.json')||{};
+            const deps={...(pkg.dependencies||{}),...(pkg.devDependencies||{})};
+            const req=['@capacitor/core','@capacitor/cli','@capacitor/android'];
+            const out=[]; const errs=[]; const majors={};
+            for (const r of req) {
+              const m=read('node_modules/'+r+'/package.json');
+              if (!m) { errs.push(r+' is not installed'); continue; }
+              majors[r]=String(m.version).split('.')[0];
+              out.push(r+'@'+m.version);
+            }
+            const uniq=[...new Set(Object.values(majors))];
+            if (uniq.length>1) errs.push('Capacitor major version mismatch: '+JSON.stringify(majors));
+            const coreMaj=majors['@capacitor/core'];
+            const names=Object.keys(deps).filter(function(d){ return /^(@capacitor\\/|@capacitor-community\\/|capacitor-)/.test(d) && req.indexOf(d)<0 && d!=='@capacitor/assets'; });
+            for (const n of names) {
+              const m=read('node_modules/'+n+'/package.json');
+              if (!m) { errs.push('plugin '+n+' is declared but not installed'); continue; }
+              out.push(n+'@'+m.version);
+              const peer=(m.peerDependencies||{})['@capacitor/core'];
+              if (peer && coreMaj && peer.indexOf('*')<0 && !new RegExp('(^|[^0-9])'+coreMaj+'\\\\.').test(peer)) {
+                errs.push('plugin '+n+' expects @capacitor/core '+peer+' but core is '+majors['@capacitor/core']);
+              }
+            }
+            console.log('[deps] Capacitor packages: '+(out.join(', ')||'none'));
+            if (errs.length) console.log('CAP_COMPAT_ERRORS:'+errs.join(' | '));
+          " > /tmp/cap-compat.txt 2>&1 || true
+          cat /tmp/cap-compat.txt | tee -a "$REPORT"
+          if grep -q "CAP_COMPAT_ERRORS:" /tmp/cap-compat.txt; then
+            fail "$(sed -n 's/^CAP_COMPAT_ERRORS://p' /tmp/cap-compat.txt | head -n 1)"
+          fi
+
+          # Toolchain: Java, Android SDK, build-tools, licences.
+          JAVA_MAJ="$(java -version 2>&1 | head -n 1 | sed -n 's/.*version "\\([0-9][0-9]*\\).*/\\1/p')"
+          log "[toolchain] Java major: \${JAVA_MAJ:-unknown}"
+          if [ -n "$JAVA_MAJ" ] && [ "$JAVA_MAJ" -lt 17 ]; then
+            fail "Java 17 or newer is required for the Android build (found $JAVA_MAJ)."
+          fi
+          SDK="\${ANDROID_HOME:-\${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          [ -d "$SDK" ] || fail "Android SDK not found (ANDROID_HOME=\${ANDROID_HOME:-unset})."
+          [ -d "$SDK/platform-tools" ] || fail "Android SDK platform-tools are missing at $SDK/platform-tools."
+          BT="$(ls -d $SDK/build-tools/* 2>/dev/null | sort -V | tail -n 1 || true)"
+          [ -n "$BT" ] || fail "No Android build-tools are installed under $SDK/build-tools."
+          log "[toolchain] Android SDK: $SDK (build-tools $(basename "$BT"))"
+          log "[toolchain] Accepted licence files: $(ls "$SDK/licenses" 2>/dev/null | wc -l)"
+          log "[deps] Dependency and toolchain verification passed"
+
+
+
       - name: Build web assets
         working-directory: project
         run: |
