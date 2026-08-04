@@ -488,8 +488,26 @@ jobs:
             log "[icon] No icon supplied or detected — using Capacitor default"
           fi
 
-          $CAP sync android || { log "[sync] First cap sync failed — retrying after npm install (auto-repair)"; npm install --no-audit --no-fund --legacy-peer-deps; $CAP sync android || fail "cap sync android failed. Native plugins could not be synchronized."; }
+          # cap sync output is captured verbatim so the Browser plugin trace can
+          # prove whether sync actually registered the native plugins.
+          if $CAP sync android > /tmp/cap-sync.log 2>&1; then
+            cat /tmp/cap-sync.log | tee -a "$REPORT"
+            echo "CAP_SYNC_EXIT=0" >> "$GITHUB_ENV"
+          else
+            cat /tmp/cap-sync.log | tee -a "$REPORT"
+            log "[sync] First cap sync failed — retrying after npm install (auto-repair)"
+            npm install --no-audit --no-fund --legacy-peer-deps
+            if $CAP sync android > /tmp/cap-sync-retry.log 2>&1; then
+              cat /tmp/cap-sync-retry.log | tee -a "$REPORT"
+              echo "CAP_SYNC_EXIT=0-after-retry" >> "$GITHUB_ENV"
+            else
+              cat /tmp/cap-sync-retry.log | tee -a "$REPORT"
+              echo "CAP_SYNC_EXIT=failed" >> "$GITHUB_ENV"
+              fail "cap sync android failed. Native plugins could not be synchronized."
+            fi
+          fi
           log "[sync] cap sync android completed"
+
 
           # Plugin verification happens ONLY after cap sync (never before).
           PLUGINS_JSON="android/app/src/main/assets/capacitor.plugins.json"
