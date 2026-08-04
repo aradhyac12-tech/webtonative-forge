@@ -1260,8 +1260,13 @@ jobs:
           GRADLE_OPTS: "-Xmx2g -Dorg.gradle.jvmargs=-Xmx2g"
         run: |
           set -e
+          # Gradle wrapper preflight (toolchain verification, part 2).
+          [ -f ./gradlew ] || { echo "PREBUILD_VALIDATION_FAILED: DEPENDENCY_VALIDATION_FAILED: android/gradlew is missing from the generated native project." | tee -a "$REPORT"; exit 1; }
+          [ -f gradle/wrapper/gradle-wrapper.properties ] || { echo "PREBUILD_VALIDATION_FAILED: DEPENDENCY_VALIDATION_FAILED: android/gradle/wrapper/gradle-wrapper.properties is missing, so no Gradle version is declared." | tee -a "$REPORT"; exit 1; }
+          grep -n "distributionUrl" gradle/wrapper/gradle-wrapper.properties | tee -a "$REPORT"
           chmod +x ./gradlew
           ./gradlew --version | sed -n '1,8p' | tee -a "$REPORT"
+
           ./gradlew --no-daemon clean
           KS_PASS="\${{ secrets.APKFORGE_KEYSTORE_PASSWORD }}"
           KEY_PASS="\${{ secrets.APKFORGE_KEY_PASSWORD }}"
