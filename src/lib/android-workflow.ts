@@ -1404,6 +1404,9 @@ jobs:
             [ -f android-signing-diagnostics.txt ] && cat android-signing-diagnostics.txt
             echo
             [ -f android-apk-verification.txt ] && cat android-apk-verification.txt
+            echo
+            [ -f browser-plugin-trace.txt ] && cat browser-plugin-trace.txt
+
           } > "$FINAL" 2>&1
           cat "$FINAL"
 
