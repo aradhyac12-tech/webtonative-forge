@@ -1353,6 +1353,20 @@ jobs:
           fi
           log "APK_VERIFICATION_PASSED"
 
+      - name: Browser plugin forensic trace (post-APK)
+        if: success() || failure()
+        working-directory: project
+        run: |
+          set +e
+          if [ -f /tmp/apkforge-browser-trace.sh ]; then
+            bash /tmp/apkforge-browser-trace.sh post-apk
+          else
+            echo "Browser plugin trace script unavailable (pipeline failed before sync)."
+          fi
+          exit 0
+
+
+
 
       - name: Final diagnostics report
         if: success() || failure()
