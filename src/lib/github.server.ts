@@ -444,10 +444,15 @@ export async function getFailureTail(
 }
 
 function summarizeFailure(text: string): string | undefined {
+  const dep = text.match(/DEPENDENCY_VALIDATION_FAILED:\s*([^\n]+)/);
+  if (dep?.[1]) return `Dependency check failed: ${dep[1].trim().slice(0, 220)}`;
+  const trace = text.match(/BROWSER_TRACE_VERDICT:\s*(?!present end-to-end)([^\n]+)/);
+  if (trace?.[1]) return `Browser plugin trace: ${trace[1].trim().slice(0, 220)}`;
   const sync = text.match(/SYNC_VALIDATION_FAILED:\s*([^\n]+)/);
   if (sync?.[1]) return sync[1].trim().slice(0, 240);
   const prebuild = text.match(/PREBUILD_VALIDATION_FAILED:\s*([^\n]+)/);
   if (prebuild?.[1]) return prebuild[1].trim().slice(0, 240);
+
   const apkVerify = text.match(/APK_VERIFICATION_FAILED:\s*([^\n]+)/);
   if (apkVerify?.[1]) return apkVerify[1].trim().slice(0, 240);
   const signingFailure = text.match(/SIGNING_VALIDATION_FAILED:\s*([^\n]+)/i);
