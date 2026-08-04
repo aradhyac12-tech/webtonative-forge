@@ -1421,6 +1421,7 @@ jobs:
             project/android-prebuild-report.txt
             project/android-signing-diagnostics.txt
             project/android-apk-verification.txt
+            project/browser-plugin-trace.txt
           if-no-files-found: error
       - name: Upload AAB
         if: success() || failure()
@@ -1439,6 +1440,7 @@ jobs:
             project/android-prebuild-report.txt
             project/android-signing-diagnostics.txt
             project/android-apk-verification.txt
+            project/browser-plugin-trace.txt
           if-no-files-found: ignore
 
       - name: Finalize APKForge build
