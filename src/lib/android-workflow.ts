@@ -365,7 +365,7 @@ jobs:
             log "DEPENDENCY_REPAIRED: realigning Capacitor packages to core major: $FIXES"
             install_pkgs "$FIXES"
             REPAIRS="$REPAIRS cap-realign:$(echo $FIXES | tr ' ' ',')"
-            node /tmp/cap-compat.js > /tmp/cap-compat.txt 2>&1 || true
+            cap_compat
             sed -n 's/^CAP_INV:/[deps] Capacitor packages after repair: /p' /tmp/cap-compat.txt | tee -a "$REPORT"
           fi
           if grep -q '^CAP_ERR:' /tmp/cap-compat.txt; then
@@ -373,7 +373,7 @@ jobs:
             fail "$(sed -n 's/^CAP_ERR://p' /tmp/cap-compat.txt | head -n 1)"
           fi
           log "[deps] Capacitor compatibility OK (major versions aligned; minor/patch differences allowed)"
-          [ -n "$REPAIRS" ] && log "DEPENDENCY_REPAIRED:$REPAIRS"
+          if [ -n "$REPAIRS" ]; then log "DEPENDENCY_REPAIRED:$REPAIRS"; fi
 
           # Toolchain: Java, Android SDK, build-tools, licences.
           JAVA_MAJ="$(java -version 2>&1 | head -n 1 | sed -n 's/.*version "\\([0-9][0-9]*\\).*/\\1/p')"
