@@ -646,24 +646,71 @@ CAPCOMPAT
           set -e
           log() { echo "$1" | tee -a "$REPORT"; }
           CORE_MAJ="$(node -e "try{console.log(require('@capacitor/core/package.json').version.split('.')[0])}catch(e){console.log('')}")"
-          ADDED=""
-          for p in browser app haptics camera filesystem preferences push-notifications network geolocation; do
-            PKG="@capacitor/$p"
+
+          # Signals are collected once from the project sources + package.json.
+          # A plugin is required when the source imports it directly OR when a
+          # library/API that needs it natively is present (e.g. an OAuth SDK
+          # cannot return to the app without Browser + App).
+          SRC_HITS=/tmp/plugin-signals.txt
+          : > "$SRC_HITS"
+          grep -rIloE --exclude-dir=node_modules --exclude-dir=android --exclude-dir=ios --exclude-dir=.git --exclude-dir=dist --exclude-dir=build \\
+            "@capacitor/[a-z-]+|@supabase/supabase-js|firebase/auth|@auth0/|@clerk/|appwrite|amazon-cognito|oidc-client|signInWithOAuth|signInWithRedirect|loginWithRedirect|authorize\\(|oauth|getUserMedia|navigator\\.geolocation|localStorage|serviceWorker|Notification\\.requestPermission|<input[^>]+type=[\\"']file[\\"']|qr|barcode|biometric|webauthn" . 2>/dev/null \\
+            | sort -u > "$SRC_HITS" || true
+          DEPS_TXT="$(node -e "const d=require('./package.json');console.log(Object.keys({...(d.dependencies||{}),...(d.devDependencies||{})}).join(' '))" 2>/dev/null || echo '')"
+          sig() { grep -qiE "$1" "$SRC_HITS" 2>/dev/null || echo "$DEPS_TXT" | grep -qiE "$1"; }
+
+          OAUTH_SIGNAL=""
+          if sig "@supabase/supabase-js|firebase|@auth0/|@clerk/|appwrite|cognito|oidc|next-auth|signinwithoauth|signinwithredirect|loginwithredirect|oauth"; then
+            OAUTH_SIGNAL=1
+            log "[plugins] OAuth/auth SDK signal detected — Browser + App are required for native callbacks"
+          fi
+
+          need() {
+            # need <plugin-suffix> <extra-signal-regex|->
+            PKG="@capacitor/$1"
             if node -e "const d=require('./package.json');const a={...(d.dependencies||{}),...(d.devDependencies||{})};process.exit(a['$PKG']?0:1)" 2>/dev/null; then
-              continue
+              return 1
             fi
-            if grep -rIlF --exclude-dir=node_modules --exclude-dir=android --exclude-dir=ios --exclude-dir=.git "$PKG" . >/dev/null 2>&1; then
-              SPEC="$PKG"
-              if [ -n "$CORE_MAJ" ]; then SPEC="$PKG@^$CORE_MAJ"; fi
-              if npm i "$SPEC" --no-audit --no-fund >/dev/null 2>&1 || npm i "$PKG" --no-audit --no-fund >/dev/null 2>&1; then
-                ADDED="$ADDED $PKG"
-                log "[plugins] Auto-installed missing plugin used by the project: $PKG"
-              else
-                log "[plugins] WARNING: could not auto-install $PKG"
-              fi
+            grep -qF "$PKG" "$SRC_HITS" 2>/dev/null && return 0
+            [ "$2" = "-" ] && return 1
+            sig "$2" && return 0
+            return 1
+          }
+
+          ADDED=""
+          add_plugin() {
+            SPEC="$1"
+            if [ -n "$CORE_MAJ" ]; then SPEC="$1@^$CORE_MAJ"; fi
+            if npm i "$SPEC" --no-audit --no-fund >/dev/null 2>&1 || npm i "$1" --no-audit --no-fund >/dev/null 2>&1; then
+              ADDED="$ADDED $1"
+              log "PLUGIN_AUTOINSTALL: $1 (required by detected project capabilities)"
+            else
+              log "[plugins] WARNING: could not auto-install $1"
             fi
-          done
-          if [ -z "$ADDED" ]; then log "[plugins] No missing Capacitor plugins detected"; fi
+          }
+
+          # app + browser are installed whenever the project has any OAuth signal:
+          # without them the provider callback stays in the system browser.
+          if [ -n "$OAUTH_SIGNAL" ]; then
+            need app - || need app "." ; [ $? -eq 0 ] && add_plugin "@capacitor/app" || true
+            need browser - || need browser "." ; [ $? -eq 0 ] && add_plugin "@capacitor/browser" || true
+          fi
+          # @capacitor/app is always useful natively (lifecycle + deep links).
+          if need app "."; then add_plugin "@capacitor/app"; fi
+
+          if need browser "oauth|signinwithoauth|loginwithredirect|window\\.open|opensystembrowser"; then add_plugin "@capacitor/browser"; fi
+          if need camera "getusermedia|<input[^>]+type=.file|qr|barcode|scanner|photo"; then add_plugin "@capacitor/camera"; fi
+          if need geolocation "navigator\\.geolocation|geolocation|maps"; then add_plugin "@capacitor/geolocation"; fi
+          if need filesystem "filesystem|downloadfile|writefile|blob|filereader"; then add_plugin "@capacitor/filesystem"; fi
+          if need preferences "localstorage|sessionstorage|persist"; then add_plugin "@capacitor/preferences"; fi
+          if need push-notifications "notification\\.requestpermission|firebase/messaging|onesignal|push"; then add_plugin "@capacitor/push-notifications"; fi
+          if need network "navigator\\.online|offline|network"; then add_plugin "@capacitor/network"; fi
+          if need haptics "haptic|vibrate"; then add_plugin "@capacitor/haptics"; fi
+          if need status-bar "statusbar|safe-area"; then add_plugin "@capacitor/status-bar"; fi
+          if need splash-screen "splash"; then add_plugin "@capacitor/splash-screen"; fi
+
+          if [ -z "$ADDED" ]; then log "[plugins] No additional Capacitor plugins required"; fi
+          log "[plugins] Auto-installed:\${ADDED:- none}"
           echo "APKFORGE_AUTO_PLUGINS=$(echo $ADDED | tr ' ' ',')" >> "$GITHUB_ENV"
 
       - name: Generate or repair native Android project
