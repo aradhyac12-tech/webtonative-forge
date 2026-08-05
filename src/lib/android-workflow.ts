@@ -177,34 +177,68 @@ jobs:
           fail() { echo "PREBUILD_VALIDATION_FAILED: DEPENDENCY_VALIDATION_FAILED: $1" | tee -a "$REPORT"; echo "::error::$1"; exit 1; }
           log "== Dependency verification =="
 
+          # --- Lockfile / package manager evidence -------------------------
+          LOCK="none"
+          [ -f package-lock.json ] && LOCK="package-lock.json"
+          [ -f yarn.lock ] && LOCK="yarn.lock"
+          [ -f pnpm-lock.yaml ] && LOCK="pnpm-lock.yaml"
+          { [ -f bun.lockb ] || [ -f bun.lock ]; } && LOCK="bun.lock"
+          PM_FIELD="$(node -e "try{console.log(require('./package.json').packageManager||'')}catch(e){console.log('')}" 2>/dev/null)"
+          log "[deps] Package manager: \${PM:-npm} (lockfile: $LOCK\${PM_FIELD:+, packageManager: $PM_FIELD})"
+          [ "$LOCK" = "none" ] && log "[deps] No lockfile present — resolving from package.json ranges"
+
           missing_list() {
             node -e "
               const fs=require('fs');
               const p=JSON.parse(fs.readFileSync('package.json','utf8'));
               const deps=Object.keys({...(p.dependencies||{}),...(p.devDependencies||{})});
-              const missing=deps.filter(function(d){ try { fs.accessSync('node_modules/'+d+'/package.json'); return false; } catch (e) { return true; } });
+              const missing=deps.filter(function(d){
+                try { JSON.parse(fs.readFileSync('node_modules/'+d+'/package.json','utf8')); return false; }
+                catch (e) { return true; }
+              });
               console.log(missing.join(' '));
             " 2>/dev/null
           }
 
+          install_pkgs() {
+            case "\${PM:-npm}" in
+              bun) bun add $1 || npm i $1 --no-audit --no-fund --legacy-peer-deps || true ;;
+              pnpm) pnpm add $1 || npm i $1 --no-audit --no-fund --legacy-peer-deps || true ;;
+              yarn) yarn add $1 || npm i $1 --no-audit --no-fund --legacy-peer-deps || true ;;
+              *) npm i $1 --no-audit --no-fund || npm i $1 --no-audit --no-fund --legacy-peer-deps || true ;;
+            esac
+          }
+
+          REPAIRS=""
           MISSING="$(missing_list)"
           if [ -n "$MISSING" ]; then
-            log "[deps] Missing from node_modules:$MISSING"
-            log "[deps] Repair attempt 1 — installing the missing packages with \${PM:-npm}"
-            case "\${PM:-npm}" in
-              bun) bun add $MISSING || true ;;
-              pnpm) pnpm add $MISSING || true ;;
-              yarn) yarn add $MISSING || true ;;
-              *) npm i $MISSING --no-audit --no-fund || true ;;
-            esac
+            log "[deps] Missing or unreadable in node_modules:$MISSING"
+            # A package folder that exists but cannot be read is broken — drop it
+            # so the reinstall is clean instead of a no-op.
+            for m in $MISSING; do [ -d "node_modules/$m" ] && rm -rf "node_modules/$m"; done
+            log "[deps] Repair 1/3 — installing the missing set with \${PM:-npm}"
+            install_pkgs "$MISSING"
+            REPAIRS="$REPAIRS installed:$(echo $MISSING | tr ' ' ',')"
             MISSING="$(missing_list)"
           fi
           if [ -n "$MISSING" ]; then
-            log "[deps] Repair attempt 2 — full reinstall with npm --legacy-peer-deps"
-            npm install --no-audit --no-fund --legacy-peer-deps || true
+            log "[deps] Repair 2/3 — full reinstall with \${PM:-npm}"
+            case "\${PM:-npm}" in
+              bun) bun install || true ;;
+              pnpm) pnpm install --no-frozen-lockfile || true ;;
+              yarn) yarn install || true ;;
+              *) npm install --no-audit --no-fund || true ;;
+            esac
+            REPAIRS="$REPAIRS full-reinstall"
             MISSING="$(missing_list)"
           fi
-          [ -z "$MISSING" ] || fail "These declared packages are still not installed after two repair attempts:$MISSING"
+          if [ -n "$MISSING" ]; then
+            log "[deps] Repair 3/3 — npm install --legacy-peer-deps"
+            npm install --no-audit --no-fund --legacy-peer-deps || true
+            REPAIRS="$REPAIRS legacy-peer-deps"
+            MISSING="$(missing_list)"
+          fi
+          [ -z "$MISSING" ] || fail "These declared packages could not be installed after three repair attempts:$MISSING"
           log "[deps] All declared dependencies and devDependencies resolve inside node_modules"
 
           # Health check (missing / invalid / duplicated / peer-incompatible).
@@ -214,6 +248,7 @@ jobs:
             yarn) yarn list --depth=1 > /tmp/dep-health.txt 2>&1 || true ;;
             *) npm ls --all --json > /tmp/dep-health.json 2>/dev/null || true ;;
           esac
+          DUPES=""
           if [ -s /tmp/dep-health.json ]; then
             node -e "
               const fs=require('fs');
@@ -234,45 +269,121 @@ jobs:
               console.log('[deps] health problems: '+(problems.length||'none'));
               problems.slice(0,40).forEach(function(p){ console.log('  '+p); });
               console.log('[deps] duplicated packages (multiple versions): '+(dups.length?dups.slice(0,25).join(', '):'none'));
-            " | tee -a "$REPORT"
+              if (dups.length) console.log('DEP_DUPES=1');
+            " > /tmp/dep-health-report.txt 2>&1 || true
+            cat /tmp/dep-health-report.txt | grep -v '^DEP_DUPES=' | tee -a "$REPORT"
+            grep -q '^DEP_DUPES=1' /tmp/dep-health-report.txt && DUPES=1
           elif [ -f /tmp/dep-health.txt ]; then
             head -n 40 /tmp/dep-health.txt | tee -a "$REPORT"
           fi
-
-          # Capacitor package presence + major-version compatibility.
-          node -e "
-            const fs=require('fs');
-            const read=function(p){ try { return JSON.parse(fs.readFileSync(p,'utf8')); } catch (e) { return null; } };
-            const pkg=read('package.json')||{};
-            const deps={...(pkg.dependencies||{}),...(pkg.devDependencies||{})};
-            const req=['@capacitor/core','@capacitor/cli','@capacitor/android'];
-            const out=[]; const errs=[]; const majors={};
-            for (const r of req) {
-              const m=read('node_modules/'+r+'/package.json');
-              if (!m) { errs.push(r+' is not installed'); continue; }
-              majors[r]=String(m.version).split('.')[0];
-              out.push(r+'@'+m.version);
-            }
-            const uniq=[...new Set(Object.values(majors))];
-            if (uniq.length>1) errs.push('Capacitor major version mismatch: '+JSON.stringify(majors));
-            const coreMaj=majors['@capacitor/core'];
-            const names=Object.keys(deps).filter(function(d){ return /^(@capacitor\\/|@capacitor-community\\/|capacitor-)/.test(d) && req.indexOf(d)<0 && d!=='@capacitor/assets'; });
-            for (const n of names) {
-              const m=read('node_modules/'+n+'/package.json');
-              if (!m) { errs.push('plugin '+n+' is declared but not installed'); continue; }
-              out.push(n+'@'+m.version);
-              const peer=(m.peerDependencies||{})['@capacitor/core'];
-              if (peer && coreMaj && peer.indexOf('*')<0 && !new RegExp('(^|[^0-9])'+coreMaj+'\\\\.').test(peer)) {
-                errs.push('plugin '+n+' expects @capacitor/core '+peer+' but core is '+majors['@capacitor/core']);
-              }
-            }
-            console.log('[deps] Capacitor packages: '+(out.join(', ')||'none'));
-            if (errs.length) console.log('CAP_COMPAT_ERRORS:'+errs.join(' | '));
-          " > /tmp/cap-compat.txt 2>&1 || true
-          cat /tmp/cap-compat.txt | tee -a "$REPORT"
-          if grep -q "CAP_COMPAT_ERRORS:" /tmp/cap-compat.txt; then
-            fail "$(sed -n 's/^CAP_COMPAT_ERRORS://p' /tmp/cap-compat.txt | head -n 1)"
+          if [ -n "$DUPES" ]; then
+            log "[deps] Deduplicating (auto-repair)"
+            case "\${PM:-npm}" in
+              pnpm) pnpm dedupe >/dev/null 2>&1 || true ;;
+              yarn) yarn dedupe >/dev/null 2>&1 || true ;;
+              bun) : ;;
+              *) npm dedupe --no-audit --no-fund >/dev/null 2>&1 || true ;;
+            esac
+            REPAIRS="$REPAIRS dedupe"
+            MISSING="$(missing_list)"
+            [ -z "$MISSING" ] || install_pkgs "$MISSING"
           fi
+
+          # --- Capacitor compatibility (official rules: MAJOR must match) ---
+          # Minor/patch differences across plugins are always allowed.
+          cat > /tmp/cap-compat.js <<'CAPCOMPAT'
+          const fs = require('fs');
+          const read = function (p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; } };
+          const pkg = read('package.json') || {};
+          const deps = Object.assign({}, pkg.dependencies || {}, pkg.devDependencies || {});
+          const inst = function (n) { return read('node_modules/' + n + '/package.json'); };
+          const majorOf = function (v) { return parseInt(String(v || '').split('.')[0], 10); };
+
+          // Real range evaluation against the installed core major.
+          function peerOk(range, coreMaj) {
+            if (!range || range.indexOf('*') >= 0 || range === 'latest') return true;
+            const ors = String(range).split('||');
+            for (const part of ors) {
+              const comps = part.trim().split(/\\s+/).filter(Boolean);
+              if (!comps.length) continue;
+              let ok = true;
+              for (const c of comps) {
+                const m = c.match(/^(>=|<=|>|<|\\^|~|=)?\\s*v?(\\d+)/);
+                if (!m) { ok = false; break; }
+                const op = m[1] || '=';
+                const maj = parseInt(m[2], 10);
+                if (op === '>=' || op === '>') ok = ok && coreMaj >= maj;
+                else if (op === '<=') ok = ok && coreMaj <= maj;
+                else if (op === '<') ok = ok && coreMaj < maj;
+                else ok = ok && coreMaj === maj;
+              }
+              if (ok) return true;
+            }
+            return false;
+          }
+
+          const core = inst('@capacitor/core');
+          if (!core) { console.log('CAP_ERR:@capacitor/core is not installed'); process.exit(0); }
+          const coreMaj = majorOf(core.version);
+          const inventory = ['@capacitor/core@' + core.version];
+          const fixes = [];
+          const errs = [];
+
+          // Platform packages: only the MAJOR has to match core.
+          for (const n of ['@capacitor/cli', '@capacitor/android', '@capacitor/ios']) {
+            const m = inst(n);
+            if (!m) {
+              if (n === '@capacitor/ios') continue;
+              fixes.push(n + '@^' + coreMaj);
+              errs.push(n + ' is not installed');
+              continue;
+            }
+            inventory.push(n + '@' + m.version);
+            if (majorOf(m.version) !== coreMaj) {
+              fixes.push(n + '@^' + coreMaj);
+              errs.push(n + ' is v' + m.version + ' but @capacitor/core is v' + core.version + ' (major must match)');
+            }
+          }
+
+          // Plugins: any minor/patch is fine; only an incompatible peer major is repaired.
+          const pluginNames = Object.keys(deps).filter(function (d) {
+            return /^(@capacitor\\/|@capacitor-community\\/|capacitor-)/.test(d) &&
+              ['@capacitor/core', '@capacitor/cli', '@capacitor/android', '@capacitor/ios', '@capacitor/assets'].indexOf(d) < 0;
+          });
+          for (const n of pluginNames) {
+            const m = inst(n);
+            if (!m) { fixes.push(n + '@^' + coreMaj); errs.push(n + ' is declared but not installed'); continue; }
+            inventory.push(n + '@' + m.version);
+            const peer = (m.peerDependencies || {})['@capacitor/core'];
+            if (peer && !peerOk(peer, coreMaj)) {
+              fixes.push(n + '@^' + coreMaj);
+              errs.push(n + '@' + m.version + ' expects @capacitor/core "' + peer + '" but core is v' + core.version);
+            }
+          }
+
+          console.log('CAP_INV:' + inventory.join(', '));
+          fixes.forEach(function (f) { console.log('CAP_FIX:' + f); });
+          errs.forEach(function (e) { console.log('CAP_ERR:' + e); });
+CAPCOMPAT
+          sed -i 's/^          //' /tmp/cap-compat.js
+
+          node /tmp/cap-compat.js > /tmp/cap-compat.txt 2>&1 || true
+          sed -n 's/^CAP_INV:/[deps] Capacitor packages: /p' /tmp/cap-compat.txt | tee -a "$REPORT"
+          if grep -q '^CAP_FIX:' /tmp/cap-compat.txt; then
+            FIXES="$(sed -n 's/^CAP_FIX://p' /tmp/cap-compat.txt | tr '\\n' ' ')"
+            sed -n 's/^CAP_ERR:/[deps] Capacitor incompatibility: /p' /tmp/cap-compat.txt | tee -a "$REPORT"
+            log "DEPENDENCY_REPAIRED: realigning Capacitor packages to core major: $FIXES"
+            install_pkgs "$FIXES"
+            REPAIRS="$REPAIRS cap-realign:$(echo $FIXES | tr ' ' ',')"
+            node /tmp/cap-compat.js > /tmp/cap-compat.txt 2>&1 || true
+            sed -n 's/^CAP_INV:/[deps] Capacitor packages after repair: /p' /tmp/cap-compat.txt | tee -a "$REPORT"
+          fi
+          if grep -q '^CAP_ERR:' /tmp/cap-compat.txt; then
+            sed -n 's/^CAP_ERR:/[deps] Unresolved: /p' /tmp/cap-compat.txt | tee -a "$REPORT"
+            fail "$(sed -n 's/^CAP_ERR://p' /tmp/cap-compat.txt | head -n 1)"
+          fi
+          log "[deps] Capacitor compatibility OK (major versions aligned; minor/patch differences allowed)"
+          [ -n "$REPAIRS" ] && log "DEPENDENCY_REPAIRED:$REPAIRS"
 
           # Toolchain: Java, Android SDK, build-tools, licences.
           JAVA_MAJ="$(java -version 2>&1 | head -n 1 | sed -n 's/.*version "\\([0-9][0-9]*\\).*/\\1/p')"
