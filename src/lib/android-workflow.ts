@@ -291,84 +291,73 @@ jobs:
 
           # --- Capacitor compatibility (official rules: MAJOR must match) ---
           # Minor/patch differences across plugins are always allowed.
-          cat > /tmp/cap-compat.js <<'CAPCOMPAT'
-          const fs = require('fs');
-          const read = function (p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; } };
-          const pkg = read('package.json') || {};
-          const deps = Object.assign({}, pkg.dependencies || {}, pkg.devDependencies || {});
-          const inst = function (n) { return read('node_modules/' + n + '/package.json'); };
-          const majorOf = function (v) { return parseInt(String(v || '').split('.')[0], 10); };
-
-          // Real range evaluation against the installed core major.
-          function peerOk(range, coreMaj) {
-            if (!range || range.indexOf('*') >= 0 || range === 'latest') return true;
-            const ors = String(range).split('||');
-            for (const part of ors) {
-              const comps = part.trim().split(/\\s+/).filter(Boolean);
-              if (!comps.length) continue;
-              let ok = true;
-              for (const c of comps) {
-                const m = c.match(/^(>=|<=|>|<|\\^|~|=)?\\s*v?(\\d+)/);
-                if (!m) { ok = false; break; }
-                const op = m[1] || '=';
-                const maj = parseInt(m[2], 10);
-                if (op === '>=' || op === '>') ok = ok && coreMaj >= maj;
-                else if (op === '<=') ok = ok && coreMaj <= maj;
-                else if (op === '<') ok = ok && coreMaj < maj;
-                else ok = ok && coreMaj === maj;
+          cap_compat() {
+            node -e "
+              const fs=require('fs');
+              const read=(p)=>{ try { return JSON.parse(fs.readFileSync(p,'utf8')); } catch (e) { return null; } };
+              const pkg=read('package.json')||{};
+              const deps={...(pkg.dependencies||{}),...(pkg.devDependencies||{})};
+              const inst=(n)=>read('node_modules/'+n+'/package.json');
+              const majorOf=(v)=>parseInt(String(v||'').split('.')[0],10);
+              // Real range evaluation — only the MAJOR has to be compatible.
+              const peerOk=(range,coreMaj)=>{
+                if (!range || range.indexOf('*')>=0 || range==='latest') return true;
+                for (const part of String(range).split('||')) {
+                  const comps=part.trim().split(/\\s+/).filter(Boolean);
+                  if (!comps.length) continue;
+                  let ok=true;
+                  for (const c of comps) {
+                    const m=c.match(/^(>=|<=|>|<|\\^|~|=)?\\s*v?(\\d+)/);
+                    if (!m) { ok=false; break; }
+                    const op=m[1]||'=';
+                    const maj=parseInt(m[2],10);
+                    if (op==='>='||op==='>') ok=ok&&coreMaj>=maj;
+                    else if (op==='<=') ok=ok&&coreMaj<=maj;
+                    else if (op==='<') ok=ok&&coreMaj<maj;
+                    else ok=ok&&coreMaj===maj;
+                  }
+                  if (ok) return true;
+                }
+                return false;
+              };
+              const core=inst('@capacitor/core');
+              if (!core) { console.log('CAP_ERR:@capacitor/core is not installed'); process.exit(0); }
+              const coreMaj=majorOf(core.version);
+              const inventory=['@capacitor/core@'+core.version];
+              const fixes=[]; const errs=[];
+              for (const n of ['@capacitor/cli','@capacitor/android','@capacitor/ios']) {
+                const m=inst(n);
+                if (!m) {
+                  if (n==='@capacitor/ios') continue;
+                  fixes.push(n+'@^'+coreMaj); errs.push(n+' is not installed'); continue;
+                }
+                inventory.push(n+'@'+m.version);
+                if (majorOf(m.version)!==coreMaj) {
+                  fixes.push(n+'@^'+coreMaj);
+                  errs.push(n+' is v'+m.version+' but @capacitor/core is v'+core.version+' (major must match)');
+                }
               }
-              if (ok) return true;
-            }
-            return false;
+              const skip=['@capacitor/core','@capacitor/cli','@capacitor/android','@capacitor/ios','@capacitor/assets'];
+              const pluginNames=Object.keys(deps).filter((d)=>/^(@capacitor\\/|@capacitor-community\\/|capacitor-)/.test(d)&&skip.indexOf(d)<0);
+              for (const n of pluginNames) {
+                const m=inst(n);
+                if (!m) { fixes.push(n+'@^'+coreMaj); errs.push(n+' is declared but not installed'); continue; }
+                inventory.push(n+'@'+m.version);
+                const peer=(m.peerDependencies||{})['@capacitor/core'];
+                // minor/patch differences are always fine — only a peer major
+                // that excludes the installed core is a real incompatibility.
+                if (peer && !peerOk(peer,coreMaj)) {
+                  fixes.push(n+'@^'+coreMaj);
+                  errs.push(n+'@'+m.version+' expects @capacitor/core '+peer+' but core is v'+core.version);
+                }
+              }
+              console.log('CAP_INV:'+inventory.join(', '));
+              fixes.forEach((f)=>console.log('CAP_FIX:'+f));
+              errs.forEach((e)=>console.log('CAP_ERR:'+e));
+            " > /tmp/cap-compat.txt 2>&1 || true
           }
 
-          const core = inst('@capacitor/core');
-          if (!core) { console.log('CAP_ERR:@capacitor/core is not installed'); process.exit(0); }
-          const coreMaj = majorOf(core.version);
-          const inventory = ['@capacitor/core@' + core.version];
-          const fixes = [];
-          const errs = [];
-
-          // Platform packages: only the MAJOR has to match core.
-          for (const n of ['@capacitor/cli', '@capacitor/android', '@capacitor/ios']) {
-            const m = inst(n);
-            if (!m) {
-              if (n === '@capacitor/ios') continue;
-              fixes.push(n + '@^' + coreMaj);
-              errs.push(n + ' is not installed');
-              continue;
-            }
-            inventory.push(n + '@' + m.version);
-            if (majorOf(m.version) !== coreMaj) {
-              fixes.push(n + '@^' + coreMaj);
-              errs.push(n + ' is v' + m.version + ' but @capacitor/core is v' + core.version + ' (major must match)');
-            }
-          }
-
-          // Plugins: any minor/patch is fine; only an incompatible peer major is repaired.
-          const pluginNames = Object.keys(deps).filter(function (d) {
-            return /^(@capacitor\\/|@capacitor-community\\/|capacitor-)/.test(d) &&
-              ['@capacitor/core', '@capacitor/cli', '@capacitor/android', '@capacitor/ios', '@capacitor/assets'].indexOf(d) < 0;
-          });
-          for (const n of pluginNames) {
-            const m = inst(n);
-            if (!m) { fixes.push(n + '@^' + coreMaj); errs.push(n + ' is declared but not installed'); continue; }
-            inventory.push(n + '@' + m.version);
-            const peer = (m.peerDependencies || {})['@capacitor/core'];
-            if (peer && !peerOk(peer, coreMaj)) {
-              fixes.push(n + '@^' + coreMaj);
-              errs.push(n + '@' + m.version + ' expects @capacitor/core "' + peer + '" but core is v' + core.version);
-            }
-          }
-
-          console.log('CAP_INV:' + inventory.join(', '));
-          fixes.forEach(function (f) { console.log('CAP_FIX:' + f); });
-          errs.forEach(function (e) { console.log('CAP_ERR:' + e); });
-CAPCOMPAT
-
-
-
-          node /tmp/cap-compat.js > /tmp/cap-compat.txt 2>&1 || true
+          cap_compat
           sed -n 's/^CAP_INV:/[deps] Capacitor packages: /p' /tmp/cap-compat.txt | tee -a "$REPORT"
           if grep -q '^CAP_FIX:' /tmp/cap-compat.txt; then
             FIXES="$(sed -n 's/^CAP_FIX://p' /tmp/cap-compat.txt | tr '\\n' ' ')"
