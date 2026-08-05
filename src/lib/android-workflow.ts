@@ -365,7 +365,8 @@ jobs:
           fixes.forEach(function (f) { console.log('CAP_FIX:' + f); });
           errs.forEach(function (e) { console.log('CAP_ERR:' + e); });
 CAPCOMPAT
-          sed -i 's/^          //' /tmp/cap-compat.js
+
+
 
           node /tmp/cap-compat.js > /tmp/cap-compat.txt 2>&1 || true
           sed -n 's/^CAP_INV:/[deps] Capacitor packages: /p' /tmp/cap-compat.txt | tee -a "$REPORT"
