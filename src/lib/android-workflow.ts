@@ -800,31 +800,29 @@ CAPCOMPAT
           # The plugin set is "declared in package.json" UNION "installed in
           # node_modules with an android/ source folder" — a plugin pulled in
           # transitively is just as native, and must be registered too.
-          cat > /tmp/plugin-set.js <<'PLUGINSET'
-const fs = require('fs');
-const skip = ['@capacitor/core', '@capacitor/cli', '@capacitor/android', '@capacitor/ios', '@capacitor/assets'];
-const isPlugin = function (d) { return (/^@capacitor\//.test(d) || /^@capacitor-community\//.test(d) || /^capacitor-/.test(d)) && skip.indexOf(d) < 0; };
-const set = new Set();
-try {
-  const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-  Object.keys(Object.assign({}, p.dependencies || {}, p.devDependencies || {})).filter(isPlugin).forEach(function (d) { set.add(d); });
-} catch (e) {}
-const scan = function (dir, prefix) {
-  let entries = [];
-  try { entries = fs.readdirSync(dir); } catch (e) { return; }
-  for (const e of entries) {
-    const name = prefix + e;
-    if (!isPlugin(name)) continue;
-    try { fs.statSync(dir + '/' + e + '/android'); set.add(name); } catch (err) {}
-  }
-};
-scan('node_modules/@capacitor', '@capacitor/');
-scan('node_modules/@capacitor-community', '@capacitor-community/');
-scan('node_modules', '');
-console.log(Array.from(set).join(','));
-PLUGINSET
-
-          PLUGIN_LIST="$(node /tmp/plugin-set.js 2>/dev/null)"
+          PLUGIN_LIST="$(node -e "
+            const fs=require('fs');
+            const skip=['@capacitor/core','@capacitor/cli','@capacitor/android','@capacitor/ios','@capacitor/assets'];
+            const isPlugin=(d)=>(/^@capacitor\\//.test(d)||/^@capacitor-community\\//.test(d)||/^capacitor-/.test(d))&&skip.indexOf(d)<0;
+            const set=new Set();
+            try {
+              const p=JSON.parse(fs.readFileSync('package.json','utf8'));
+              Object.keys({...(p.dependencies||{}),...(p.devDependencies||{})}).filter(isPlugin).forEach((d)=>set.add(d));
+            } catch (e) {}
+            const scan=(dir,prefix)=>{
+              let entries=[];
+              try { entries=fs.readdirSync(dir); } catch (e) { return; }
+              for (const en of entries) {
+                const name=prefix+en;
+                if (!isPlugin(name)) continue;
+                try { fs.statSync(dir+'/'+en+'/android'); set.add(name); } catch (err) {}
+              }
+            };
+            scan('node_modules/@capacitor','@capacitor/');
+            scan('node_modules/@capacitor-community','@capacitor-community/');
+            scan('node_modules','');
+            console.log(Array.from(set).join(','));
+          " 2>/dev/null)"
           registered_missing() {
             node -e "
               const fs=require('fs');
