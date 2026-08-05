@@ -215,7 +215,7 @@ jobs:
             log "[deps] Missing or unreadable in node_modules:$MISSING"
             # A package folder that exists but cannot be read is broken — drop it
             # so the reinstall is clean instead of a no-op.
-            for m in $MISSING; do [ -d "node_modules/$m" ] && rm -rf "node_modules/$m"; done
+            for m in $MISSING; do if [ -d "node_modules/$m" ]; then rm -rf "node_modules/$m"; fi; done
             log "[deps] Repair 1/3 — installing the missing set with \${PM:-npm}"
             install_pkgs "$MISSING"
             REPAIRS="$REPAIRS installed:$(echo $MISSING | tr ' ' ',')"
