@@ -668,6 +668,7 @@ jobs:
 
           ADDED=""
           add_plugin() {
+            case " $ADDED " in *" $1 "*) return 0 ;; esac
             SPEC="$1"
             if [ -n "$CORE_MAJ" ]; then SPEC="$1@^$CORE_MAJ"; fi
             if npm i "$SPEC" --no-audit --no-fund >/dev/null 2>&1 || npm i "$1" --no-audit --no-fund >/dev/null 2>&1; then
