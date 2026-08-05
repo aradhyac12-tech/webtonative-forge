@@ -179,13 +179,13 @@ jobs:
 
           # --- Lockfile / package manager evidence -------------------------
           LOCK="none"
-          [ -f package-lock.json ] && LOCK="package-lock.json"
-          [ -f yarn.lock ] && LOCK="yarn.lock"
-          [ -f pnpm-lock.yaml ] && LOCK="pnpm-lock.yaml"
-          { [ -f bun.lockb ] || [ -f bun.lock ]; } && LOCK="bun.lock"
+          if [ -f package-lock.json ]; then LOCK="package-lock.json"; fi
+          if [ -f yarn.lock ]; then LOCK="yarn.lock"; fi
+          if [ -f pnpm-lock.yaml ]; then LOCK="pnpm-lock.yaml"; fi
+          if [ -f bun.lockb ] || [ -f bun.lock ]; then LOCK="bun.lock"; fi
           PM_FIELD="$(node -e "try{console.log(require('./package.json').packageManager||'')}catch(e){console.log('')}" 2>/dev/null)"
           log "[deps] Package manager: \${PM:-npm} (lockfile: $LOCK\${PM_FIELD:+, packageManager: $PM_FIELD})"
-          [ "$LOCK" = "none" ] && log "[deps] No lockfile present — resolving from package.json ranges"
+          if [ "$LOCK" = "none" ]; then log "[deps] No lockfile present — resolving from package.json ranges"; fi
 
           missing_list() {
             node -e "
