@@ -665,14 +665,14 @@ CAPCOMPAT
             log "[plugins] OAuth/auth SDK signal detected — Browser + App are required for native callbacks"
           fi
 
+          declared() {
+            node -e "const d=require('./package.json');const a={...(d.dependencies||{}),...(d.devDependencies||{})};process.exit(a['$1']?0:1)" 2>/dev/null
+          }
           need() {
-            # need <plugin-suffix> <extra-signal-regex|->
+            # need <plugin-suffix> <extra-signal-regex>
             PKG="@capacitor/$1"
-            if node -e "const d=require('./package.json');const a={...(d.dependencies||{}),...(d.devDependencies||{})};process.exit(a['$PKG']?0:1)" 2>/dev/null; then
-              return 1
-            fi
+            declared "$PKG" && return 1
             grep -qF "$PKG" "$SRC_HITS" 2>/dev/null && return 0
-            [ "$2" = "-" ] && return 1
             sig "$2" && return 0
             return 1
           }
@@ -692,11 +692,11 @@ CAPCOMPAT
           # app + browser are installed whenever the project has any OAuth signal:
           # without them the provider callback stays in the system browser.
           if [ -n "$OAUTH_SIGNAL" ]; then
-            need app - || need app "." ; [ $? -eq 0 ] && add_plugin "@capacitor/app" || true
-            need browser - || need browser "." ; [ $? -eq 0 ] && add_plugin "@capacitor/browser" || true
+            declared "@capacitor/app" || add_plugin "@capacitor/app"
+            declared "@capacitor/browser" || add_plugin "@capacitor/browser"
           fi
-          # @capacitor/app is always useful natively (lifecycle + deep links).
-          if need app "."; then add_plugin "@capacitor/app"; fi
+          # @capacitor/app underpins lifecycle + appUrlOpen deep-link delivery.
+          declared "@capacitor/app" || add_plugin "@capacitor/app"
 
           if need browser "oauth|signinwithoauth|loginwithredirect|window\\.open|opensystembrowser"; then add_plugin "@capacitor/browser"; fi
           if need camera "getusermedia|<input[^>]+type=.file|qr|barcode|scanner|photo"; then add_plugin "@capacitor/camera"; fi
