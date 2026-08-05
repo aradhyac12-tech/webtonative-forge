@@ -272,7 +272,7 @@ jobs:
               if (dups.length) console.log('DEP_DUPES=1');
             " > /tmp/dep-health-report.txt 2>&1 || true
             cat /tmp/dep-health-report.txt | grep -v '^DEP_DUPES=' | tee -a "$REPORT"
-            grep -q '^DEP_DUPES=1' /tmp/dep-health-report.txt && DUPES=1
+            if grep -q '^DEP_DUPES=1' /tmp/dep-health-report.txt; then DUPES=1; fi
           elif [ -f /tmp/dep-health.txt ]; then
             head -n 40 /tmp/dep-health.txt | tee -a "$REPORT"
           fi
