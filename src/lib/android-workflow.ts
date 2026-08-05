@@ -1018,6 +1018,27 @@ jobs:
           TRACEEOF
           chmod +x /tmp/apkforge-browser-trace.sh
           bash /tmp/apkforge-browser-trace.sh post-sync
+
+          # Auto-repair: if the trace shows the Browser plugin is not declared or
+          # not installed, install it at the core major, re-sync, and re-trace.
+          if grep -q "^BROWSER_TRACE_VERDICT: stage [12]" browser-plugin-trace.txt 2>/dev/null; then
+            echo "[browser-repair] Browser plugin missing at declaration/install stage — repairing"
+            CORE_MAJ="$(node -e "try{console.log(require('@capacitor/core/package.json').version.split('.')[0])}catch(e){console.log('')}" 2>/dev/null)"
+            if [ -n "$CORE_MAJ" ]; then
+              npm i "@capacitor/browser@^$CORE_MAJ" --no-audit --no-fund || npm i @capacitor/browser --no-audit --no-fund || true
+            else
+              npm i @capacitor/browser --no-audit --no-fund || true
+            fi
+            npx cap sync android > /tmp/cap-sync-browser-repair.log 2>&1 || true
+            tail -n 40 /tmp/cap-sync-browser-repair.log || true
+            mv browser-plugin-trace.txt browser-plugin-trace-before-repair.txt 2>/dev/null || true
+            bash /tmp/apkforge-browser-trace.sh post-sync-repair
+            if grep -q "^BROWSER_TRACE_VERDICT: present end-to-end" browser-plugin-trace.txt 2>/dev/null; then
+              echo "BROWSER_TRACE_VERDICT: repaired (Browser plugin installed and registered during the build)" | tee -a "$REPORT"
+            else
+              echo "BROWSER_TRACE_VERDICT: unrepairable — see browser-plugin-trace.txt" | tee -a "$REPORT"
+            fi
+          fi
           exit 0
 
 
