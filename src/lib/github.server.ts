@@ -446,6 +446,10 @@ export async function getFailureTail(
 function summarizeFailure(text: string): string | undefined {
   const dep = text.match(/DEPENDENCY_VALIDATION_FAILED:\s*([^\n]+)/);
   if (dep?.[1]) return `Dependency check failed: ${dep[1].trim().slice(0, 220)}`;
+  const iosSign = text.match(/IOS_SIGNING_VALIDATION_FAILED:\s*([^\n]+)/);
+  if (iosSign?.[1]) return `iOS signing failed: ${iosSign[1].trim().slice(0, 220)}`;
+  const ios = text.match(/IOS_VALIDATION_FAILED:\s*([^\n]+)/);
+  if (ios?.[1]) return `iOS build check failed: ${ios[1].trim().slice(0, 220)}`;
   const trace = text.match(/BROWSER_TRACE_VERDICT:\s*(?!present end-to-end)([^\n]+)/);
   if (trace?.[1]) return `Browser plugin trace: ${trace[1].trim().slice(0, 220)}`;
   const sync = text.match(/SYNC_VALIDATION_FAILED:\s*([^\n]+)/);
