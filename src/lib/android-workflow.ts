@@ -797,37 +797,55 @@ CAPCOMPAT
             $CAP sync android || true
           fi
 
-          MISSING="$(node -e "
-            const fs=require('fs');
-            const p=JSON.parse(fs.readFileSync('package.json','utf8'));
-            const deps=Object.keys({...(p.dependencies||{}),...(p.devDependencies||{})});
-            const skip=['@capacitor/core','@capacitor/cli','@capacitor/android','@capacitor/ios','@capacitor/assets'];
-            const plugins=deps.filter(d=>(/^@capacitor\\//.test(d)||/^@capacitor-community\\//.test(d)||/^capacitor-/.test(d))&&!skip.includes(d));
-            let reg='';
-            for (const f of ['android/capacitor.settings.gradle','android/app/capacitor.build.gradle','android/app/src/main/assets/capacitor.plugins.json']) { try { reg+=fs.readFileSync(f,'utf8'); } catch {} }
-            const missing=plugins.filter(pl=>!reg.includes(pl) && !reg.includes(pl.replace(/^@/,'').replace(/\\//g,'-')));
-            console.log(missing.join(','));
-          ")"
-          if [ -n "$MISSING" ]; then
-            log "[sync] Plugins not registered after first sync: $MISSING — re-syncing (auto-repair)"
-            $CAP sync android || true
-            MISSING2="$(node -e "
+          # The plugin set is "declared in package.json" UNION "installed in
+          # node_modules with an android/ source folder" — a plugin pulled in
+          # transitively is just as native, and must be registered too.
+          cat > /tmp/plugin-set.js <<'PLUGINSET'
+const fs = require('fs');
+const skip = ['@capacitor/core', '@capacitor/cli', '@capacitor/android', '@capacitor/ios', '@capacitor/assets'];
+const isPlugin = function (d) { return (/^@capacitor\//.test(d) || /^@capacitor-community\//.test(d) || /^capacitor-/.test(d)) && skip.indexOf(d) < 0; };
+const set = new Set();
+try {
+  const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  Object.keys(Object.assign({}, p.dependencies || {}, p.devDependencies || {})).filter(isPlugin).forEach(function (d) { set.add(d); });
+} catch (e) {}
+const scan = function (dir, prefix) {
+  let entries = [];
+  try { entries = fs.readdirSync(dir); } catch (e) { return; }
+  for (const e of entries) {
+    const name = prefix + e;
+    if (!isPlugin(name)) continue;
+    try { fs.statSync(dir + '/' + e + '/android'); set.add(name); } catch (err) {}
+  }
+};
+scan('node_modules/@capacitor', '@capacitor/');
+scan('node_modules/@capacitor-community', '@capacitor-community/');
+scan('node_modules', '');
+console.log(Array.from(set).join(','));
+PLUGINSET
+
+          PLUGIN_LIST="$(node /tmp/plugin-set.js 2>/dev/null)"
+          registered_missing() {
+            node -e "
               const fs=require('fs');
               let reg='';
-              for (const f of ['android/capacitor.settings.gradle','android/app/capacitor.build.gradle','android/app/src/main/assets/capacitor.plugins.json']) { try { reg+=fs.readFileSync(f,'utf8'); } catch {} }
-              const list=process.argv[1].split(',').filter(Boolean);
-              console.log(list.filter(pl=>!reg.includes(pl)).join(','));
-            " "$MISSING")"
+              for (const f of ['android/capacitor.settings.gradle','android/app/capacitor.build.gradle','android/app/src/main/assets/capacitor.plugins.json']) { try { reg+=fs.readFileSync(f,'utf8'); } catch (e) {} }
+              const list=(process.argv[1]||'').split(',').filter(Boolean);
+              console.log(list.filter(function(pl){ return !reg.includes(pl) && !reg.includes(pl.replace(/^@/,'').replace(/\\//g,'-')); }).join(','));
+            " "$1"
+          }
+
+          MISSING="$(registered_missing "$PLUGIN_LIST")"
+          if [ -n "$MISSING" ]; then
+            log "[sync] Plugins not registered after first sync: $MISSING — reinstalling and re-syncing (auto-repair)"
+            npm i $(echo "$MISSING" | tr ',' ' ') --no-audit --no-fund >/dev/null 2>&1 || true
+            $CAP sync android || true
+            MISSING2="$(registered_missing "$MISSING")"
             [ -z "$MISSING2" ] || fail "SYNC_VALIDATION_FAILED: these Capacitor plugins were not registered in the native Android project: $MISSING2"
+            log "[sync] Auto-repair succeeded — all plugins are now registered"
           fi
 
           [ -f "$PLUGINS_JSON" ] || log "[sync] WARNING: no capacitor.plugins.json (project declares no native plugins)"
-          PLUGIN_LIST="$(node -e "
-            const p=require('./package.json');
-            const skip=['@capacitor/core','@capacitor/cli','@capacitor/android','@capacitor/ios','@capacitor/assets'];
-            const deps=Object.keys({...(p.dependencies||{}),...(p.devDependencies||{})});
-            console.log(deps.filter(d=>(/^@capacitor\\//.test(d)||/^@capacitor-community\\//.test(d)||/^capacitor-/.test(d))&&!skip.includes(d)).join(','));
-          ")"
           log "[sync] Registered Capacitor plugins: \${PLUGIN_LIST:-none}"
           echo "APKFORGE_PLUGINS=$PLUGIN_LIST" >> "$GITHUB_ENV"
 
