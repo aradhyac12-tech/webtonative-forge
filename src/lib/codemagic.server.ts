@@ -34,30 +34,54 @@ export function requireIosSigningEnv(): {
   return { issuerId, keyId, privateKey };
 }
 
+async function retry<T>(fn: () => Promise<T>, isTransient: (v: T) => boolean, attempts = 3): Promise<T> {
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const out = await fn();
+      if (i < attempts - 1 && isTransient(out)) {
+        await new Promise((r) => setTimeout(r, 600 * 2 ** i));
+        continue;
+      }
+      return out;
+    } catch (e) {
+      lastError = e;
+      if (i === attempts - 1) break;
+      await new Promise((r) => setTimeout(r, 600 * 2 ** i));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 async function cm<T = unknown>(
   { token }: Pick<CodemagicEnv, "token">,
   path: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T | null }> {
-  const res = await fetch(API + path, {
-    ...init,
-    headers: {
-      "x-auth-token": token,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...(init.headers ?? {}),
-    },
-  });
-  const text = await res.text();
-  let body: T | null = null;
-  if (text) {
-    try {
-      body = JSON.parse(text) as T;
-    } catch {
-      body = text as unknown as T;
+  const doFetch = async () => {
+    const res = await fetch(API + path, {
+      ...init,
+      headers: {
+        "x-auth-token": token,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...(init.headers ?? {}),
+      },
+    });
+    const text = await res.text();
+    let body: T | null = null;
+    if (text) {
+      try {
+        body = JSON.parse(text) as T;
+      } catch {
+        body = text as unknown as T;
+      }
     }
-  }
-  return { status: res.status, body };
+    return { status: res.status, body };
+  };
+  const idempotent = !init.method || init.method.toUpperCase() === "GET";
+  if (!idempotent) return doFetch();
+  return retry(doFetch, (out) => out.status === 429 || out.status >= 500);
 }
 
 export type CodemagicBuildResponse = { buildId: string };
