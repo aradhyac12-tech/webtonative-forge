@@ -142,7 +142,7 @@ async function dispatchAndroid(
   return { ok: true, runId };
 }
 
-async function dispatchIos(supabase: any, userId: string, build: any) {
+async function dispatchIos(supabase: any, userId: string, build: any, appOrigin: string) {
   const {
     requireCodemagicEnv,
     requireIosSigningEnv,
