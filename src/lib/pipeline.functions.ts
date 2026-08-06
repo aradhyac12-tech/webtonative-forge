@@ -195,6 +195,8 @@ async function dispatchIos(supabase: any, userId: string, build: any, appOrigin:
       APP_STORE_CONNECT_ISSUER_ID: signing.issuerId,
       APP_STORE_CONNECT_KEY_IDENTIFIER: signing.keyId,
       APP_STORE_CONNECT_PRIVATE_KEY: signing.privateKey,
+      FINALIZE_ENDPOINT: appOrigin ? `${appOrigin}/api/public/build-ios-finalize` : "",
+      DIAGNOSTIC_TOKEN: build.diagnostic_token ?? "",
     },
   });
 
