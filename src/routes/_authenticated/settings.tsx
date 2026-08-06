@@ -17,7 +17,7 @@ import {
   DialogTrigger,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { iosAvailability } from "@/lib/pipeline.functions";
+import { iosAvailability, buildPreflight } from "@/lib/pipeline.functions";
 
 export const Route = createFileRoute("/_authenticated/settings")({
   component: Settings,
@@ -27,12 +27,51 @@ function Settings() {
   return (
     <div className="space-y-8">
       <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+      <PreflightSection />
       <GitHubSection />
       <KeystoreSection />
       <IosSection />
     </div>
   );
 }
+
+function PreflightSection() {
+  const preflightFn = useServerFn(buildPreflight);
+  const { data, isFetching, refetch } = useQuery({
+    queryKey: ["build_preflight"],
+    queryFn: () => preflightFn(),
+  });
+
+  return (
+    <section>
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <CheckCircle2 className="h-4 w-4" /> Build readiness
+      </h2>
+      <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+        {(data?.checks ?? []).map((check) => (
+          <div key={check.name} className="flex items-start gap-3">
+            {check.ok ? (
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+            ) : (
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+            )}
+            <div>
+              <p className="text-sm font-medium">{check.name}</p>
+              <p className="text-xs text-muted-foreground">{check.detail}</p>
+            </div>
+          </div>
+        ))}
+        {!data && (
+          <p className="text-xs text-muted-foreground">Running readiness checks…</p>
+        )}
+        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+          {isFetching ? "Checking…" : "Re-run checks"}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 
 function IosSection() {
   const iosFn = useServerFn(iosAvailability);
