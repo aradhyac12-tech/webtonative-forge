@@ -260,37 +260,94 @@ async function refreshAndroid(supabase: any, userId: string, build: any) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
   if (run.conclusion === "success") {
-    const apkBuf = await getArtifactDownload(g, repoName, runId);
-    if (!apkBuf) throw new Error("No APK artifact produced by workflow.");
-    const artifactPath = `${userId}/${build.id}.apk`;
-    const { error: upErr } = await supabaseAdmin.storage
-      .from("build-artifacts")
-      .upload(artifactPath, new Blob([apkBuf], { type: "application/vnd.android.package-archive" }), {
-        upsert: true,
-        contentType: "application/vnd.android.package-archive",
-      });
-    if (upErr) throw upErr;
-    await supabaseAdmin
-      .from("builds")
-      .update({ status: "success", artifact_path: artifactPath })
-      .eq("id", build.id);
-    return { status: "success", html_url: run.html_url };
+    try {
+      const apkBuf = await getArtifactDownload(g, repoName, runId);
+      if (!apkBuf) throw new Error("No APK artifact produced by workflow.");
+      const artifactPath = `${userId}/${build.id}.apk`;
+      const { error: upErr } = await supabaseAdmin.storage
+        .from("build-artifacts")
+        .upload(artifactPath, new Blob([apkBuf], { type: "application/vnd.android.package-archive" }), {
+          upsert: true,
+          contentType: "application/vnd.android.package-archive",
+        });
+      if (upErr) throw upErr;
+      await supabaseAdmin
+        .from("builds")
+        .update({ status: "success", artifact_path: artifactPath, error_summary: null })
+        .eq("id", build.id);
+      return { status: "success", html_url: run.html_url };
+    } catch (e) {
+      return await handleFinalizeFailure(
+        supabaseAdmin,
+        build.id,
+        build.status,
+        (e as Error).message,
+        run.html_url,
+      );
+    }
   }
 
-  const { tail, summary } = await getFailureTail(g, repoName, runId);
-  await supabaseAdmin.from("build_logs").insert({ build_id: build.id, chunk: tail });
-  await supabaseAdmin
-    .from("builds")
-    .update({
-      status: "failed",
-      error_summary: summary ?? `Workflow ${run.conclusion}. See logs.`,
-    })
-    .eq("id", build.id);
+  try {
+    const { tail, summary } = await getFailureTail(g, repoName, runId);
+    await supabaseAdmin.from("build_logs").insert({ build_id: build.id, chunk: tail });
+    await supabaseAdmin
+      .from("builds")
+      .update({
+        status: "failed",
+        error_summary: summary ?? `Workflow ${run.conclusion}. See logs.`,
+      })
+      .eq("id", build.id);
+  } catch {
+    await supabaseAdmin
+      .from("builds")
+      .update({ status: "failed", error_summary: `Workflow ${run.conclusion}. Logs unavailable.` })
+      .eq("id", build.id);
+  }
   return { status: "failed", html_url: run.html_url };
 }
 
+/**
+ * A build that finished on the CI side but whose artifact/log pickup failed is
+ * kept non-terminal (so polling retries) instead of throwing an "Unable to
+ * fetch" error at the browser. After MAX_FINALIZE_ATTEMPTS it is marked failed.
+ */
+const MAX_FINALIZE_ATTEMPTS = 5;
+
+async function handleFinalizeFailure(
+  supabaseAdmin: any,
+  buildId: string,
+  currentStatus: string,
+  message: string,
+  htmlUrl?: string,
+) {
+  const marker = "[finalize-retry]";
+  const { count } = await supabaseAdmin
+    .from("build_logs")
+    .select("id", { count: "exact", head: true })
+    .eq("build_id", buildId)
+    .like("chunk", `${marker}%`);
+
+  const attempts = (count ?? 0) + 1;
+  await supabaseAdmin
+    .from("build_logs")
+    .insert({ build_id: buildId, chunk: `${marker} attempt ${attempts}: ${message}` });
+
+  if (attempts >= MAX_FINALIZE_ATTEMPTS) {
+    await supabaseAdmin
+      .from("builds")
+      .update({
+        status: "failed",
+        error_summary: `The CI build finished but the artifact could not be collected after ${attempts} attempts: ${message.slice(0, 200)}`,
+      })
+      .eq("id", buildId);
+    return { status: "failed", html_url: htmlUrl };
+  }
+
+  return { status: currentStatus === "queued" ? "queued" : "in_progress", html_url: htmlUrl, transient: true };
+}
+
 async function refreshIos(supabase: any, userId: string, build: any) {
-  const { requireCodemagicEnv, getBuild, mapCodemagicStatus, tailFromActions, downloadArtifact } =
+  const { requireCodemagicEnv, getBuild, mapCodemagicStatus, tailFromActions, resolveIpaBuffer } =
     await import("./codemagic.server");
   if (build.status === "success" || build.status === "failed") return { status: build.status };
   if (!build.codemagic_build_id) return { status: build.status };
@@ -309,32 +366,46 @@ async function refreshIos(supabase: any, userId: string, build: any) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
   if (mapped.conclusion === "success") {
-    const ipa = (cmBuild.artefacts ?? []).find((a) => a.name.toLowerCase().endsWith(".ipa"));
-    if (!ipa) throw new Error("Codemagic finished but no .ipa artifact was found.");
-    const buf = await downloadArtifact(cm, ipa.url);
-    const artifactPath = `${userId}/${build.id}.ipa`;
-    const { error: upErr } = await supabaseAdmin.storage
-      .from("build-artifacts")
-      .upload(artifactPath, new Blob([buf], { type: "application/octet-stream" }), {
-        upsert: true,
-        contentType: "application/octet-stream",
-      });
-    if (upErr) throw upErr;
-    await supabaseAdmin
-      .from("builds")
-      .update({ status: "success", artifact_path: artifactPath })
-      .eq("id", build.id);
-    return { status: "success", html_url: cmBuild.buildUrl };
+    try {
+      const buf = await resolveIpaBuffer(cm, cmBuild);
+      if (!buf) throw new Error("Codemagic finished but no .ipa artifact was found.");
+      const artifactPath = `${userId}/${build.id}.ipa`;
+      const { error: upErr } = await supabaseAdmin.storage
+        .from("build-artifacts")
+        .upload(artifactPath, new Blob([buf], { type: "application/octet-stream" }), {
+          upsert: true,
+          contentType: "application/octet-stream",
+        });
+      if (upErr) throw upErr;
+      await supabaseAdmin
+        .from("builds")
+        .update({ status: "success", artifact_path: artifactPath, error_summary: null })
+        .eq("id", build.id);
+      return { status: "success", html_url: cmBuild.buildUrl };
+    } catch (e) {
+      return await handleFinalizeFailure(
+        supabaseAdmin,
+        build.id,
+        build.status,
+        (e as Error).message,
+        cmBuild.buildUrl,
+      );
+    }
   }
 
   const tail = tailFromActions(cmBuild);
+  const { summarizeFailure } = await import("./github.server");
   await supabaseAdmin.from("build_logs").insert({ build_id: build.id, chunk: tail });
   await supabaseAdmin
     .from("builds")
-    .update({ status: "failed", error_summary: `Codemagic build ${cmBuild.status}.` })
+    .update({
+      status: "failed",
+      error_summary: summarizeFailure(tail) ?? `Codemagic build ${cmBuild.status}.`,
+    })
     .eq("id", build.id);
   return { status: "failed", html_url: cmBuild.buildUrl };
 }
+
 
 // -----------------------------------------------------------------------------
 // Artifact URL
