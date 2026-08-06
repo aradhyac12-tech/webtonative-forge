@@ -34,30 +34,54 @@ export function requireIosSigningEnv(): {
   return { issuerId, keyId, privateKey };
 }
 
+async function retry<T>(fn: () => Promise<T>, isTransient: (v: T) => boolean, attempts = 3): Promise<T> {
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const out = await fn();
+      if (i < attempts - 1 && isTransient(out)) {
+        await new Promise((r) => setTimeout(r, 600 * 2 ** i));
+        continue;
+      }
+      return out;
+    } catch (e) {
+      lastError = e;
+      if (i === attempts - 1) break;
+      await new Promise((r) => setTimeout(r, 600 * 2 ** i));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 async function cm<T = unknown>(
   { token }: Pick<CodemagicEnv, "token">,
   path: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T | null }> {
-  const res = await fetch(API + path, {
-    ...init,
-    headers: {
-      "x-auth-token": token,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...(init.headers ?? {}),
-    },
-  });
-  const text = await res.text();
-  let body: T | null = null;
-  if (text) {
-    try {
-      body = JSON.parse(text) as T;
-    } catch {
-      body = text as unknown as T;
+  const doFetch = async () => {
+    const res = await fetch(API + path, {
+      ...init,
+      headers: {
+        "x-auth-token": token,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...(init.headers ?? {}),
+      },
+    });
+    const text = await res.text();
+    let body: T | null = null;
+    if (text) {
+      try {
+        body = JSON.parse(text) as T;
+      } catch {
+        body = text as unknown as T;
+      }
     }
-  }
-  return { status: res.status, body };
+    return { status: res.status, body };
+  };
+  const idempotent = !init.method || init.method.toUpperCase() === "GET";
+  if (!idempotent) return doFetch();
+  return retry(doFetch, (out) => out.status === 429 || out.status >= 500);
 }
 
 export type CodemagicBuildResponse = { buildId: string };
@@ -115,12 +139,41 @@ export async function downloadArtifact(
   env: CodemagicEnv,
   url: string,
 ): Promise<ArrayBuffer> {
-  const res = await fetch(url, {
-    headers: { "x-auth-token": env.token },
-    redirect: "follow",
-  });
+  const res = await retry(
+    () => fetch(url, { headers: { "x-auth-token": env.token }, redirect: "follow" }),
+    (out) => out.status === 429 || out.status >= 500,
+  );
   if (!res.ok) throw new Error(`Artifact download failed (${res.status})`);
   return await res.arrayBuffer();
+}
+
+/**
+ * Resolve the IPA bytes from a finished build: prefer a direct `.ipa` artefact,
+ * otherwise unwrap the first zip/archive artefact and extract an `.ipa` inside.
+ */
+export async function resolveIpaBuffer(
+  env: CodemagicEnv,
+  build: CodemagicBuild["build"],
+): Promise<ArrayBuffer | null> {
+  const artefacts = build.artefacts ?? [];
+  const direct = artefacts.find((a) => a.name.toLowerCase().endsWith(".ipa"));
+  if (direct) return await downloadArtifact(env, direct.url);
+
+  const archives = artefacts.filter((a) => /\.(zip|xcarchive\.zip|tar)$/i.test(a.name));
+  for (const archive of archives) {
+    try {
+      const buf = await downloadArtifact(env, archive.url);
+      const { default: JSZip } = await import("jszip");
+      const zip = await JSZip.loadAsync(buf);
+      const entry = Object.values(zip.files).find(
+        (f) => !f.dir && f.name.toLowerCase().endsWith(".ipa"),
+      );
+      if (entry) return await entry.async("arraybuffer");
+    } catch {
+      // try the next archive
+    }
+  }
+  return null;
 }
 
 // Codemagic status → APKForge status

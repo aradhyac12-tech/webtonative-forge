@@ -55,7 +55,7 @@ export const dispatchBuild = createServerFn({ method: "POST" })
     const appOrigin = cleanAppOrigin(data.appOrigin);
 
     if (build.platform === "ios") {
-      return dispatchIos(supabase, userId, build);
+      return dispatchIos(supabase, userId, build, appOrigin);
     }
     return dispatchAndroid(supabase, userId, build, appOrigin);
   });
@@ -142,7 +142,7 @@ async function dispatchAndroid(
   return { ok: true, runId };
 }
 
-async function dispatchIos(supabase: any, userId: string, build: any) {
+async function dispatchIos(supabase: any, userId: string, build: any, appOrigin: string) {
   const {
     requireCodemagicEnv,
     requireIosSigningEnv,
@@ -195,6 +195,8 @@ async function dispatchIos(supabase: any, userId: string, build: any) {
       APP_STORE_CONNECT_ISSUER_ID: signing.issuerId,
       APP_STORE_CONNECT_KEY_IDENTIFIER: signing.keyId,
       APP_STORE_CONNECT_PRIVATE_KEY: signing.privateKey,
+      FINALIZE_ENDPOINT: appOrigin ? `${appOrigin}/api/public/build-ios-finalize` : "",
+      DIAGNOSTIC_TOKEN: build.diagnostic_token ?? "",
     },
   });
 
@@ -260,37 +262,94 @@ async function refreshAndroid(supabase: any, userId: string, build: any) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
   if (run.conclusion === "success") {
-    const apkBuf = await getArtifactDownload(g, repoName, runId);
-    if (!apkBuf) throw new Error("No APK artifact produced by workflow.");
-    const artifactPath = `${userId}/${build.id}.apk`;
-    const { error: upErr } = await supabaseAdmin.storage
-      .from("build-artifacts")
-      .upload(artifactPath, new Blob([apkBuf], { type: "application/vnd.android.package-archive" }), {
-        upsert: true,
-        contentType: "application/vnd.android.package-archive",
-      });
-    if (upErr) throw upErr;
-    await supabaseAdmin
-      .from("builds")
-      .update({ status: "success", artifact_path: artifactPath })
-      .eq("id", build.id);
-    return { status: "success", html_url: run.html_url };
+    try {
+      const apkBuf = await getArtifactDownload(g, repoName, runId);
+      if (!apkBuf) throw new Error("No APK artifact produced by workflow.");
+      const artifactPath = `${userId}/${build.id}.apk`;
+      const { error: upErr } = await supabaseAdmin.storage
+        .from("build-artifacts")
+        .upload(artifactPath, new Blob([apkBuf], { type: "application/vnd.android.package-archive" }), {
+          upsert: true,
+          contentType: "application/vnd.android.package-archive",
+        });
+      if (upErr) throw upErr;
+      await supabaseAdmin
+        .from("builds")
+        .update({ status: "success", artifact_path: artifactPath, error_summary: null })
+        .eq("id", build.id);
+      return { status: "success", html_url: run.html_url };
+    } catch (e) {
+      return await handleFinalizeFailure(
+        supabaseAdmin,
+        build.id,
+        build.status,
+        (e as Error).message,
+        run.html_url,
+      );
+    }
   }
 
-  const { tail, summary } = await getFailureTail(g, repoName, runId);
-  await supabaseAdmin.from("build_logs").insert({ build_id: build.id, chunk: tail });
-  await supabaseAdmin
-    .from("builds")
-    .update({
-      status: "failed",
-      error_summary: summary ?? `Workflow ${run.conclusion}. See logs.`,
-    })
-    .eq("id", build.id);
+  try {
+    const { tail, summary } = await getFailureTail(g, repoName, runId);
+    await supabaseAdmin.from("build_logs").insert({ build_id: build.id, chunk: tail });
+    await supabaseAdmin
+      .from("builds")
+      .update({
+        status: "failed",
+        error_summary: summary ?? `Workflow ${run.conclusion}. See logs.`,
+      })
+      .eq("id", build.id);
+  } catch {
+    await supabaseAdmin
+      .from("builds")
+      .update({ status: "failed", error_summary: `Workflow ${run.conclusion}. Logs unavailable.` })
+      .eq("id", build.id);
+  }
   return { status: "failed", html_url: run.html_url };
 }
 
+/**
+ * A build that finished on the CI side but whose artifact/log pickup failed is
+ * kept non-terminal (so polling retries) instead of throwing an "Unable to
+ * fetch" error at the browser. After MAX_FINALIZE_ATTEMPTS it is marked failed.
+ */
+const MAX_FINALIZE_ATTEMPTS = 5;
+
+async function handleFinalizeFailure(
+  supabaseAdmin: any,
+  buildId: string,
+  currentStatus: string,
+  message: string,
+  htmlUrl?: string,
+) {
+  const marker = "[finalize-retry]";
+  const { count } = await supabaseAdmin
+    .from("build_logs")
+    .select("id", { count: "exact", head: true })
+    .eq("build_id", buildId)
+    .like("chunk", `${marker}%`);
+
+  const attempts = (count ?? 0) + 1;
+  await supabaseAdmin
+    .from("build_logs")
+    .insert({ build_id: buildId, chunk: `${marker} attempt ${attempts}: ${message}` });
+
+  if (attempts >= MAX_FINALIZE_ATTEMPTS) {
+    await supabaseAdmin
+      .from("builds")
+      .update({
+        status: "failed",
+        error_summary: `The CI build finished but the artifact could not be collected after ${attempts} attempts: ${message.slice(0, 200)}`,
+      })
+      .eq("id", buildId);
+    return { status: "failed", html_url: htmlUrl };
+  }
+
+  return { status: currentStatus === "queued" ? "queued" : "in_progress", html_url: htmlUrl, transient: true };
+}
+
 async function refreshIos(supabase: any, userId: string, build: any) {
-  const { requireCodemagicEnv, getBuild, mapCodemagicStatus, tailFromActions, downloadArtifact } =
+  const { requireCodemagicEnv, getBuild, mapCodemagicStatus, tailFromActions, resolveIpaBuffer } =
     await import("./codemagic.server");
   if (build.status === "success" || build.status === "failed") return { status: build.status };
   if (!build.codemagic_build_id) return { status: build.status };
@@ -309,32 +368,46 @@ async function refreshIos(supabase: any, userId: string, build: any) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
   if (mapped.conclusion === "success") {
-    const ipa = (cmBuild.artefacts ?? []).find((a) => a.name.toLowerCase().endsWith(".ipa"));
-    if (!ipa) throw new Error("Codemagic finished but no .ipa artifact was found.");
-    const buf = await downloadArtifact(cm, ipa.url);
-    const artifactPath = `${userId}/${build.id}.ipa`;
-    const { error: upErr } = await supabaseAdmin.storage
-      .from("build-artifacts")
-      .upload(artifactPath, new Blob([buf], { type: "application/octet-stream" }), {
-        upsert: true,
-        contentType: "application/octet-stream",
-      });
-    if (upErr) throw upErr;
-    await supabaseAdmin
-      .from("builds")
-      .update({ status: "success", artifact_path: artifactPath })
-      .eq("id", build.id);
-    return { status: "success", html_url: cmBuild.buildUrl };
+    try {
+      const buf = await resolveIpaBuffer(cm, cmBuild);
+      if (!buf) throw new Error("Codemagic finished but no .ipa artifact was found.");
+      const artifactPath = `${userId}/${build.id}.ipa`;
+      const { error: upErr } = await supabaseAdmin.storage
+        .from("build-artifacts")
+        .upload(artifactPath, new Blob([buf], { type: "application/octet-stream" }), {
+          upsert: true,
+          contentType: "application/octet-stream",
+        });
+      if (upErr) throw upErr;
+      await supabaseAdmin
+        .from("builds")
+        .update({ status: "success", artifact_path: artifactPath, error_summary: null })
+        .eq("id", build.id);
+      return { status: "success", html_url: cmBuild.buildUrl };
+    } catch (e) {
+      return await handleFinalizeFailure(
+        supabaseAdmin,
+        build.id,
+        build.status,
+        (e as Error).message,
+        cmBuild.buildUrl,
+      );
+    }
   }
 
   const tail = tailFromActions(cmBuild);
+  const { summarizeFailure } = await import("./github.server");
   await supabaseAdmin.from("build_logs").insert({ build_id: build.id, chunk: tail });
   await supabaseAdmin
     .from("builds")
-    .update({ status: "failed", error_summary: `Codemagic build ${cmBuild.status}.` })
+    .update({
+      status: "failed",
+      error_summary: summarizeFailure(tail) ?? `Codemagic build ${cmBuild.status}.`,
+    })
     .eq("id", build.id);
   return { status: "failed", html_url: cmBuild.buildUrl };
 }
+
 
 // -----------------------------------------------------------------------------
 // Artifact URL
@@ -449,3 +522,135 @@ export const iosAvailability = createServerFn({ method: "GET" })
         !!process.env.APKFORGE_CENTRAL_GH_TOKEN && !!process.env.APKFORGE_CENTRAL_GH_REPO,
     };
   });
+
+// -----------------------------------------------------------------------------
+// Build preflight self-check (Settings)
+// -----------------------------------------------------------------------------
+
+type PreflightCheck = { name: string; ok: boolean; detail: string };
+
+export const buildPreflight = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabase } = context;
+    const checks: PreflightCheck[] = [];
+
+    const { data: gh } = await supabase
+      .from("github_connections")
+      .select("github_login, access_token")
+      .maybeSingle();
+
+    if (!gh) {
+      checks.push({
+        name: "GitHub connection",
+        ok: false,
+        detail: "No GitHub token saved. Connect GitHub above with a token that has the `repo` and `workflow` scopes.",
+      });
+    } else {
+      const headers = {
+        Authorization: `Bearer ${gh.access_token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "APKForge",
+      };
+      const userRes = await fetch("https://api.github.com/user", { headers });
+      checks.push({
+        name: "GitHub token",
+        ok: userRes.ok,
+        detail: userRes.ok
+          ? `Authenticated as ${gh.github_login}.`
+          : `GitHub rejected the saved token (${userRes.status}). Re-connect GitHub with a valid token.`,
+      });
+
+      if (userRes.ok) {
+        const repoRes = await fetch(
+          `https://api.github.com/repos/${gh.github_login}/${ANDROID_REPO_NAME}`,
+          { headers },
+        );
+        if (repoRes.status === 404) {
+          checks.push({
+            name: "Build repo",
+            ok: true,
+            detail: `${gh.github_login}/${ANDROID_REPO_NAME} will be created on the first Android build.`,
+          });
+        } else if (!repoRes.ok) {
+          checks.push({
+            name: "Build repo",
+            ok: false,
+            detail: `Could not read ${gh.github_login}/${ANDROID_REPO_NAME} (${repoRes.status}).`,
+          });
+        } else {
+          const repo = (await repoRes.json()) as {
+            default_branch?: string;
+            permissions?: { push?: boolean; admin?: boolean };
+          };
+          const canPush = !!repo.permissions?.push;
+          checks.push({
+            name: "Build repo access",
+            ok: canPush,
+            detail: canPush
+              ? `Push access confirmed on ${gh.github_login}/${ANDROID_REPO_NAME} (default branch ${repo.default_branch ?? "main"}).`
+              : "The saved token cannot push to the build repo. Use a token with the `repo` scope.",
+          });
+
+          const { ANDROID_WORKFLOW_FILENAME } = await import("./android-workflow");
+          const wfRes = await fetch(
+            `https://api.github.com/repos/${gh.github_login}/${ANDROID_REPO_NAME}/actions/workflows/${ANDROID_WORKFLOW_FILENAME}`,
+            { headers },
+          );
+          checks.push({
+            name: "Android workflow",
+            ok: wfRes.ok || wfRes.status === 404,
+            detail: wfRes.ok
+              ? "Workflow is indexed by GitHub Actions and dispatchable."
+              : wfRes.status === 404
+                ? "Workflow not pushed yet — it is synced automatically when a build starts."
+                : `GitHub returned ${wfRes.status} for the workflow file.`,
+          });
+        }
+      }
+    }
+
+    try {
+      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+      const { error: srcErr } = await supabaseAdmin.storage.from("build-sources").list("", { limit: 1 });
+      const { error: artErr } = await supabaseAdmin.storage.from("build-artifacts").list("", { limit: 1 });
+      const ok = !srcErr && !artErr;
+      checks.push({
+        name: "Storage buckets",
+        ok,
+        detail: ok
+          ? "build-sources and build-artifacts are reachable."
+          : `Bucket problem: ${(srcErr ?? artErr)?.message}`,
+      });
+    } catch (e) {
+      checks.push({ name: "Storage buckets", ok: false, detail: (e as Error).message });
+    }
+
+    const cmToken = process.env.CODEMAGIC_API_TOKEN;
+    const cmApp = process.env.CODEMAGIC_APP_ID;
+    if (!cmToken || !cmApp) {
+      checks.push({
+        name: "Codemagic (iOS)",
+        ok: false,
+        detail: "CODEMAGIC_API_TOKEN / CODEMAGIC_APP_ID are not set. Android builds are unaffected.",
+      });
+    } else {
+      try {
+        const res = await fetch(`https://api.codemagic.io/apps/${cmApp}`, {
+          headers: { "x-auth-token": cmToken, Accept: "application/json" },
+        });
+        checks.push({
+          name: "Codemagic (iOS)",
+          ok: res.ok,
+          detail: res.ok
+            ? "Codemagic app reachable with the configured token."
+            : `Codemagic returned ${res.status} for the configured app id.`,
+        });
+      } catch (e) {
+        checks.push({ name: "Codemagic (iOS)", ok: false, detail: (e as Error).message });
+      }
+    }
+
+    return { checks, allOk: checks.every((c) => c.ok) };
+  });
+

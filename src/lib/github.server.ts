@@ -4,6 +4,34 @@ const API = "https://api.github.com";
 
 export type GH = { token: string; login: string };
 
+/** Retry helper: only for transient network errors and 429/5xx. */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  isTransient: (result: T) => boolean = () => false,
+  attempts = 3,
+): Promise<T> {
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const out = await fn();
+      if (i < attempts - 1 && isTransient(out)) {
+        await new Promise((r) => setTimeout(r, 600 * 2 ** i));
+        continue;
+      }
+      return out;
+    } catch (e) {
+      lastError = e;
+      if (i === attempts - 1) break;
+      await new Promise((r) => setTimeout(r, 600 * 2 ** i));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function transientStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
 async function gh<T = unknown>(
   { token }: GH,
   path: string,
@@ -295,16 +323,17 @@ export async function getRun(
   conclusion: string | null;
   html_url: string;
 }> {
-  const r = await gh<{
-    id: number;
-    name?: string;
-    display_title?: string;
-    status: string;
-    conclusion: string | null;
-    html_url: string;
-  }>(
-    g,
-    `/repos/${g.login}/${repo}/actions/runs/${runId}`,
+  const r = await withRetry(
+    () =>
+      gh<{
+        id: number;
+        name?: string;
+        display_title?: string;
+        status: string;
+        conclusion: string | null;
+        html_url: string;
+      }>(g, `/repos/${g.login}/${repo}/actions/runs/${runId}`),
+    (out) => transientStatus(out.status),
   );
   if (r.status >= 300 || !r.body) throw new Error(`Get run failed (${r.status})`);
   return r.body;
@@ -328,16 +357,17 @@ export async function getArtifactDownload(
     await new Promise((res) => setTimeout(res, 2500));
   }
   if (!apk) return null;
-  const res = await fetch(
-    `${API}/repos/${g.login}/${repo}/actions/artifacts/${apk.id}/zip`,
-    {
-      headers: {
-        Authorization: `Bearer ${g.token}`,
-        Accept: "application/vnd.github+json",
-        "User-Agent": "APKForge",
-      },
-      redirect: "follow",
-    },
+  const res = await withRetry(
+    () =>
+      fetch(`${API}/repos/${g.login}/${repo}/actions/artifacts/${apk!.id}/zip`, {
+        headers: {
+          Authorization: `Bearer ${g.token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "APKForge",
+        },
+        redirect: "follow",
+      }),
+    (out) => transientStatus(out.status),
   );
   if (!res.ok) throw new Error(`Artifact download failed (${res.status})`);
   const artifactZip = await res.arrayBuffer();
@@ -443,7 +473,7 @@ export async function getFailureTail(
   }
 }
 
-function summarizeFailure(text: string): string | undefined {
+export function summarizeFailure(text: string): string | undefined {
   const dep = text.match(/DEPENDENCY_VALIDATION_FAILED:\s*([^\n]+)/);
   if (dep?.[1]) return `Dependency check failed: ${dep[1].trim().slice(0, 220)}`;
   const iosSign = text.match(/IOS_SIGNING_VALIDATION_FAILED:\s*([^\n]+)/);

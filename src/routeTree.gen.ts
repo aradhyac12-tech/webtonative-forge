@@ -15,6 +15,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticated/settings'
 import { Route as AuthenticatedNewBuildRouteImport } from './routes/_authenticated/new-build'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
+import { Route as ApiPublicBuildIosFinalizeRouteImport } from './routes/api/public/build-ios-finalize'
 import { Route as ApiPublicBuildFinalizeRouteImport } from './routes/api/public/build-finalize'
 import { Route as ApiPublicBuildDiagnosticsRouteImport } from './routes/api/public/build-diagnostics'
 import { Route as AuthenticatedBuildIdRouteImport } from './routes/_authenticated/build.$id'
@@ -48,6 +49,12 @@ const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const ApiPublicBuildIosFinalizeRoute =
+  ApiPublicBuildIosFinalizeRouteImport.update({
+    id: '/api/public/build-ios-finalize',
+    path: '/api/public/build-ios-finalize',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicBuildFinalizeRoute = ApiPublicBuildFinalizeRouteImport.update({
   id: '/api/public/build-finalize',
   path: '/api/public/build-finalize',
@@ -74,6 +81,7 @@ export interface FileRoutesByFullPath {
   '/build/$id': typeof AuthenticatedBuildIdRoute
   '/api/public/build-diagnostics': typeof ApiPublicBuildDiagnosticsRoute
   '/api/public/build-finalize': typeof ApiPublicBuildFinalizeRoute
+  '/api/public/build-ios-finalize': typeof ApiPublicBuildIosFinalizeRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -84,6 +92,7 @@ export interface FileRoutesByTo {
   '/build/$id': typeof AuthenticatedBuildIdRoute
   '/api/public/build-diagnostics': typeof ApiPublicBuildDiagnosticsRoute
   '/api/public/build-finalize': typeof ApiPublicBuildFinalizeRoute
+  '/api/public/build-ios-finalize': typeof ApiPublicBuildIosFinalizeRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -96,6 +105,7 @@ export interface FileRoutesById {
   '/_authenticated/build/$id': typeof AuthenticatedBuildIdRoute
   '/api/public/build-diagnostics': typeof ApiPublicBuildDiagnosticsRoute
   '/api/public/build-finalize': typeof ApiPublicBuildFinalizeRoute
+  '/api/public/build-ios-finalize': typeof ApiPublicBuildIosFinalizeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -108,6 +118,7 @@ export interface FileRouteTypes {
     | '/build/$id'
     | '/api/public/build-diagnostics'
     | '/api/public/build-finalize'
+    | '/api/public/build-ios-finalize'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -118,6 +129,7 @@ export interface FileRouteTypes {
     | '/build/$id'
     | '/api/public/build-diagnostics'
     | '/api/public/build-finalize'
+    | '/api/public/build-ios-finalize'
   id:
     | '__root__'
     | '/'
@@ -129,6 +141,7 @@ export interface FileRouteTypes {
     | '/_authenticated/build/$id'
     | '/api/public/build-diagnostics'
     | '/api/public/build-finalize'
+    | '/api/public/build-ios-finalize'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -137,6 +150,7 @@ export interface RootRouteChildren {
   AuthRoute: typeof AuthRoute
   ApiPublicBuildDiagnosticsRoute: typeof ApiPublicBuildDiagnosticsRoute
   ApiPublicBuildFinalizeRoute: typeof ApiPublicBuildFinalizeRoute
+  ApiPublicBuildIosFinalizeRoute: typeof ApiPublicBuildIosFinalizeRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -182,6 +196,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/dashboard'
       preLoaderRoute: typeof AuthenticatedDashboardRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/api/public/build-ios-finalize': {
+      id: '/api/public/build-ios-finalize'
+      path: '/api/public/build-ios-finalize'
+      fullPath: '/api/public/build-ios-finalize'
+      preLoaderRoute: typeof ApiPublicBuildIosFinalizeRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/public/build-finalize': {
       id: '/api/public/build-finalize'
@@ -230,17 +251,8 @@ const rootRouteChildren: RootRouteChildren = {
   AuthRoute: AuthRoute,
   ApiPublicBuildDiagnosticsRoute: ApiPublicBuildDiagnosticsRoute,
   ApiPublicBuildFinalizeRoute: ApiPublicBuildFinalizeRoute,
+  ApiPublicBuildIosFinalizeRoute: ApiPublicBuildIosFinalizeRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}

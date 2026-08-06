@@ -517,4 +517,17 @@ export const IOS_WORKFLOW_YAML = `workflows:
       - project/ios/App/build/ios/ipa/*.ipa
       - project/ios-build-report.txt
       - /tmp/xcodebuild_logs/*.log
+    publishing:
+      scripts:
+        - name: Notify APKForge (background finalize)
+          script: |
+            set +e
+            if [ -n "$FINALIZE_ENDPOINT" ] && [ -n "$DIAGNOSTIC_TOKEN" ]; then
+              for i in 1 2 3; do
+                curl -sS --fail -X POST "$FINALIZE_ENDPOINT" \\
+                  -H "content-type: application/json" \\
+                  -d "{\\"buildId\\":\\"$BUILD_ID\\",\\"token\\":\\"$DIAGNOSTIC_TOKEN\\",\\"codemagicBuildId\\":\\"$CM_BUILD_ID\\"}" && break
+                sleep 10
+              done
+            fi
 `;
