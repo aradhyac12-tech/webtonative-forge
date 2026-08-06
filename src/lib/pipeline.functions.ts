@@ -55,7 +55,7 @@ export const dispatchBuild = createServerFn({ method: "POST" })
     const appOrigin = cleanAppOrigin(data.appOrigin);
 
     if (build.platform === "ios") {
-      return dispatchIos(supabase, userId, build);
+      return dispatchIos(supabase, userId, build, appOrigin);
     }
     return dispatchAndroid(supabase, userId, build, appOrigin);
   });
