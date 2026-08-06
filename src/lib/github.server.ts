@@ -473,7 +473,7 @@ export async function getFailureTail(
   }
 }
 
-function summarizeFailure(text: string): string | undefined {
+export function summarizeFailure(text: string): string | undefined {
   const dep = text.match(/DEPENDENCY_VALIDATION_FAILED:\s*([^\n]+)/);
   if (dep?.[1]) return `Dependency check failed: ${dep[1].trim().slice(0, 220)}`;
   const iosSign = text.match(/IOS_SIGNING_VALIDATION_FAILED:\s*([^\n]+)/);
