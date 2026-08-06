@@ -522,3 +522,135 @@ export const iosAvailability = createServerFn({ method: "GET" })
         !!process.env.APKFORGE_CENTRAL_GH_TOKEN && !!process.env.APKFORGE_CENTRAL_GH_REPO,
     };
   });
+
+// -----------------------------------------------------------------------------
+// Build preflight self-check (Settings)
+// -----------------------------------------------------------------------------
+
+type PreflightCheck = { name: string; ok: boolean; detail: string };
+
+export const buildPreflight = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabase } = context;
+    const checks: PreflightCheck[] = [];
+
+    const { data: gh } = await supabase
+      .from("github_connections")
+      .select("github_login, access_token")
+      .maybeSingle();
+
+    if (!gh) {
+      checks.push({
+        name: "GitHub connection",
+        ok: false,
+        detail: "No GitHub token saved. Connect GitHub above with a token that has the `repo` and `workflow` scopes.",
+      });
+    } else {
+      const headers = {
+        Authorization: `Bearer ${gh.access_token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "APKForge",
+      };
+      const userRes = await fetch("https://api.github.com/user", { headers });
+      checks.push({
+        name: "GitHub token",
+        ok: userRes.ok,
+        detail: userRes.ok
+          ? `Authenticated as ${gh.github_login}.`
+          : `GitHub rejected the saved token (${userRes.status}). Re-connect GitHub with a valid token.`,
+      });
+
+      if (userRes.ok) {
+        const repoRes = await fetch(
+          `https://api.github.com/repos/${gh.github_login}/${ANDROID_REPO_NAME}`,
+          { headers },
+        );
+        if (repoRes.status === 404) {
+          checks.push({
+            name: "Build repo",
+            ok: true,
+            detail: `${gh.github_login}/${ANDROID_REPO_NAME} will be created on the first Android build.`,
+          });
+        } else if (!repoRes.ok) {
+          checks.push({
+            name: "Build repo",
+            ok: false,
+            detail: `Could not read ${gh.github_login}/${ANDROID_REPO_NAME} (${repoRes.status}).`,
+          });
+        } else {
+          const repo = (await repoRes.json()) as {
+            default_branch?: string;
+            permissions?: { push?: boolean; admin?: boolean };
+          };
+          const canPush = !!repo.permissions?.push;
+          checks.push({
+            name: "Build repo access",
+            ok: canPush,
+            detail: canPush
+              ? `Push access confirmed on ${gh.github_login}/${ANDROID_REPO_NAME} (default branch ${repo.default_branch ?? "main"}).`
+              : "The saved token cannot push to the build repo. Use a token with the `repo` scope.",
+          });
+
+          const { ANDROID_WORKFLOW_FILENAME } = await import("./android-workflow");
+          const wfRes = await fetch(
+            `https://api.github.com/repos/${gh.github_login}/${ANDROID_REPO_NAME}/actions/workflows/${ANDROID_WORKFLOW_FILENAME}`,
+            { headers },
+          );
+          checks.push({
+            name: "Android workflow",
+            ok: wfRes.ok || wfRes.status === 404,
+            detail: wfRes.ok
+              ? "Workflow is indexed by GitHub Actions and dispatchable."
+              : wfRes.status === 404
+                ? "Workflow not pushed yet — it is synced automatically when a build starts."
+                : `GitHub returned ${wfRes.status} for the workflow file.`,
+          });
+        }
+      }
+    }
+
+    try {
+      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+      const { error: srcErr } = await supabaseAdmin.storage.from("build-sources").list("", { limit: 1 });
+      const { error: artErr } = await supabaseAdmin.storage.from("build-artifacts").list("", { limit: 1 });
+      const ok = !srcErr && !artErr;
+      checks.push({
+        name: "Storage buckets",
+        ok,
+        detail: ok
+          ? "build-sources and build-artifacts are reachable."
+          : `Bucket problem: ${(srcErr ?? artErr)?.message}`,
+      });
+    } catch (e) {
+      checks.push({ name: "Storage buckets", ok: false, detail: (e as Error).message });
+    }
+
+    const cmToken = process.env.CODEMAGIC_API_TOKEN;
+    const cmApp = process.env.CODEMAGIC_APP_ID;
+    if (!cmToken || !cmApp) {
+      checks.push({
+        name: "Codemagic (iOS)",
+        ok: false,
+        detail: "CODEMAGIC_API_TOKEN / CODEMAGIC_APP_ID are not set. Android builds are unaffected.",
+      });
+    } else {
+      try {
+        const res = await fetch(`https://api.codemagic.io/apps/${cmApp}`, {
+          headers: { "x-auth-token": cmToken, Accept: "application/json" },
+        });
+        checks.push({
+          name: "Codemagic (iOS)",
+          ok: res.ok,
+          detail: res.ok
+            ? "Codemagic app reachable with the configured token."
+            : `Codemagic returned ${res.status} for the configured app id.`,
+        });
+      } catch (e) {
+        checks.push({ name: "Codemagic (iOS)", ok: false, detail: (e as Error).message });
+      }
+    }
+
+    return { checks, allOk: checks.every((c) => c.ok) };
+  });
+
