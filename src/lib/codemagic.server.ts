@@ -139,12 +139,41 @@ export async function downloadArtifact(
   env: CodemagicEnv,
   url: string,
 ): Promise<ArrayBuffer> {
-  const res = await fetch(url, {
-    headers: { "x-auth-token": env.token },
-    redirect: "follow",
-  });
+  const res = await retry(
+    () => fetch(url, { headers: { "x-auth-token": env.token }, redirect: "follow" }),
+    (out) => out.status === 429 || out.status >= 500,
+  );
   if (!res.ok) throw new Error(`Artifact download failed (${res.status})`);
   return await res.arrayBuffer();
+}
+
+/**
+ * Resolve the IPA bytes from a finished build: prefer a direct `.ipa` artefact,
+ * otherwise unwrap the first zip/archive artefact and extract an `.ipa` inside.
+ */
+export async function resolveIpaBuffer(
+  env: CodemagicEnv,
+  build: CodemagicBuild["build"],
+): Promise<ArrayBuffer | null> {
+  const artefacts = build.artefacts ?? [];
+  const direct = artefacts.find((a) => a.name.toLowerCase().endsWith(".ipa"));
+  if (direct) return await downloadArtifact(env, direct.url);
+
+  const archives = artefacts.filter((a) => /\.(zip|xcarchive\.zip|tar)$/i.test(a.name));
+  for (const archive of archives) {
+    try {
+      const buf = await downloadArtifact(env, archive.url);
+      const { default: JSZip } = await import("jszip");
+      const zip = await JSZip.loadAsync(buf);
+      const entry = Object.values(zip.files).find(
+        (f) => !f.dir && f.name.toLowerCase().endsWith(".ipa"),
+      );
+      if (entry) return await entry.async("arraybuffer");
+    } catch {
+      // try the next archive
+    }
+  }
+  return null;
 }
 
 // Codemagic status → APKForge status
