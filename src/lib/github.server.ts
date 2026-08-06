@@ -4,6 +4,34 @@ const API = "https://api.github.com";
 
 export type GH = { token: string; login: string };
 
+/** Retry helper: only for transient network errors and 429/5xx. */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  isTransient: (result: T) => boolean = () => false,
+  attempts = 3,
+): Promise<T> {
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const out = await fn();
+      if (i < attempts - 1 && isTransient(out)) {
+        await new Promise((r) => setTimeout(r, 600 * 2 ** i));
+        continue;
+      }
+      return out;
+    } catch (e) {
+      lastError = e;
+      if (i === attempts - 1) break;
+      await new Promise((r) => setTimeout(r, 600 * 2 ** i));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function transientStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
 async function gh<T = unknown>(
   { token }: GH,
   path: string,
