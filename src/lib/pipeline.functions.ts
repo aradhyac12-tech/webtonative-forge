@@ -75,6 +75,10 @@ export const retryBuild = createServerFn({ method: "POST" })
     if (!build.artifact_path) {
       throw new Error("The original source zip is no longer available — start a new build.");
     }
+    if (build.status === "success") {
+      throw new Error("This build already succeeded — start a new build instead of retrying.");
+    }
+
 
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     await supabaseAdmin
