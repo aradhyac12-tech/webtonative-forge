@@ -34,6 +34,7 @@ function BuildDetail() {
   const { id } = Route.useParams();
   const refresh = useServerFn(refreshBuildStatus);
   const getUrl = useServerFn(getArtifactUrl);
+  const retry = useServerFn(retryBuild);
 
   const buildQ = useQuery({
     queryKey: ["build", id],
