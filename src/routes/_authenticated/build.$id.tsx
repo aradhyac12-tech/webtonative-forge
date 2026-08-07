@@ -8,7 +8,7 @@ import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import { refreshBuildStatus, getArtifactUrl } from "@/lib/pipeline.functions";
+import { refreshBuildStatus, getArtifactUrl, retryBuild } from "@/lib/pipeline.functions";
 
 export const Route = createFileRoute("/_authenticated/build/$id")({
   component: BuildDetail,
@@ -34,6 +34,7 @@ function BuildDetail() {
   const { id } = Route.useParams();
   const refresh = useServerFn(refreshBuildStatus);
   const getUrl = useServerFn(getArtifactUrl);
+  const retry = useServerFn(retryBuild);
 
   const buildQ = useQuery({
     queryKey: ["build", id],
@@ -70,6 +71,17 @@ function BuildDetail() {
     onSuccess: () => buildQ.refetch(),
     onError: (e) => toast.error((e as Error).message),
   });
+
+  const retryMut = useMutation({
+    mutationFn: () => retry({ data: { buildId: id, appOrigin: window.location.origin } }),
+    onSuccess: () => {
+      toast.success("Build re-queued.");
+      buildQ.refetch();
+      logsQ.refetch();
+    },
+    onError: (e) => toast.error(`Retry failed: ${(e as Error).message}`),
+  });
+
 
   useEffect(() => {
     if (!buildQ.data) return;
@@ -148,6 +160,11 @@ function BuildDetail() {
             {!TERMINAL.has(b.status) && (
               <Button variant="outline" size="sm" onClick={() => refreshMut.mutate()} disabled={refreshMut.isPending}>
                 <RefreshCw className={`mr-1 h-3.5 w-3.5 ${refreshMut.isPending ? "animate-spin" : ""}`} /> Refresh
+              </Button>
+            )}
+            {b.status === "failed" && (
+              <Button variant="outline" size="sm" onClick={() => retryMut.mutate()} disabled={retryMut.isPending}>
+                <RefreshCw className={`mr-1 h-3.5 w-3.5 ${retryMut.isPending ? "animate-spin" : ""}`} /> Retry build
               </Button>
             )}
             {b.platform !== "ios" && b.repo && b.github_run_id && (

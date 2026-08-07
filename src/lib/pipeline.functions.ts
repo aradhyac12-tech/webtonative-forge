@@ -60,6 +60,44 @@ export const dispatchBuild = createServerFn({ method: "POST" })
     return dispatchAndroid(supabase, userId, build, appOrigin);
   });
 
+// Re-dispatches an existing build with the exact same inputs after clearing the
+// previous terminal state, so a failed run can be retried from the build page.
+export const retryBuild = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: { buildId: string; appOrigin?: string }) =>
+    z.object({ buildId: z.string().uuid(), appOrigin: z.string().optional() }).parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const build = await loadBuild(supabase, userId, data.buildId);
+    const appOrigin = cleanAppOrigin(data.appOrigin);
+
+    if (!build.artifact_path) {
+      throw new Error("The original source zip is no longer available — start a new build.");
+    }
+    if (build.status === "success") {
+      throw new Error("This build already succeeded — start a new build instead of retrying.");
+    }
+
+
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    await supabaseAdmin
+      .from("builds")
+      .update({
+        status: "pending",
+        error_summary: null,
+        github_run_id: null,
+        codemagic_build_id: null,
+      })
+      .eq("id", build.id);
+    await supabaseAdmin.from("build_logs").delete().eq("build_id", build.id);
+
+    const fresh = { ...build, status: "pending", github_run_id: null, codemagic_build_id: null };
+    if (build.platform === "ios") return dispatchIos(supabase, userId, fresh, appOrigin);
+    return dispatchAndroid(supabase, userId, fresh, appOrigin);
+  });
+
+
 async function dispatchAndroid(
   supabase: any,
   userId: string,

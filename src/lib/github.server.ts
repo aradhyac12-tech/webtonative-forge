@@ -448,7 +448,7 @@ export async function getFailureTail(
       let generic: { name: string; text: string } | null = null;
       for (const f of entries) {
         const text = await f.async("string");
-        if (/PREBUILD_VALIDATION_FAILED:|SIGNING_VALIDATION_FAILED:|APK_VERIFICATION_FAILED:|DEPENDENCY_VALIDATION_FAILED:/.test(text)) {
+        if (/PREBUILD_VALIDATION_FAILED:|SIGNING_VALIDATION_FAILED:|APK_VERIFICATION_FAILED:|DEPENDENCY_VALIDATION_FAILED:|OAUTH_VALIDATION_FAILED:/.test(text)) {
           marked = { name: f.name, text };
         }
         if (/BUILD FAILED|What went wrong|##\[error\]|Process completed with exit code [1-9]/i.test(text)) {
@@ -482,6 +482,8 @@ export function summarizeFailure(text: string): string | undefined {
   if (ios?.[1]) return `iOS build check failed: ${ios[1].trim().slice(0, 220)}`;
   const trace = text.match(/BROWSER_TRACE_VERDICT:\s*(?!present end-to-end)([^\n]+)/);
   if (trace?.[1]) return `Browser plugin trace: ${trace[1].trim().slice(0, 220)}`;
+  const oauth = text.match(/OAUTH_VALIDATION_FAILED:\s*([^\n]+)/);
+  if (oauth?.[1]) return `OAuth readiness failed: ${oauth[1].replace(/^;\s*/, "").trim().slice(0, 220)}`;
   const sync = text.match(/SYNC_VALIDATION_FAILED:\s*([^\n]+)/);
   if (sync?.[1]) return sync[1].trim().slice(0, 240);
   const prebuild = text.match(/PREBUILD_VALIDATION_FAILED:\s*([^\n]+)/);
