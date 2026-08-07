@@ -522,6 +522,10 @@ function NewBuild() {
           >
             {creating ? "Uploading…" : `Start ${platform === "android" ? "Android" : "iOS"} build`}
           </Button>
+          {!canStart && !creating && blockedReason && (
+            <p className="mt-2 text-center text-xs text-amber-400">{blockedReason}</p>
+          )}
+
         </>
       )}
     </div>
