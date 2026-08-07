@@ -121,6 +121,21 @@ function NewBuild() {
     !!bundleId &&
     (platform === "android" ? !!gh && !!selectedKeystoreId : iosReady);
 
+  const blockedReason = !result
+    ? "Upload and validate a project zip first."
+    : !bundleId.trim()
+      ? "Enter a bundle ID (reverse-DNS, e.g. com.acme.app)."
+      : platform === "android"
+        ? !gh
+          ? "Connect GitHub in Settings before starting an Android build."
+          : !selectedKeystoreId
+            ? "Select a signing keystore."
+            : null
+        : !iosReady
+          ? "iOS signing isn't configured for this workspace yet."
+          : null;
+
+
   async function startBuild() {
     if (!result) return;
     if (!bundleId.trim()) return toast.error("Bundle ID is required.");
