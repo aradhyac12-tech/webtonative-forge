@@ -72,6 +72,17 @@ function BuildDetail() {
     onError: (e) => toast.error((e as Error).message),
   });
 
+  const retryMut = useMutation({
+    mutationFn: () => retry({ data: { buildId: id, appOrigin: window.location.origin } }),
+    onSuccess: () => {
+      toast.success("Build re-queued.");
+      buildQ.refetch();
+      logsQ.refetch();
+    },
+    onError: (e) => toast.error(`Retry failed: ${(e as Error).message}`),
+  });
+
+
   useEffect(() => {
     if (!buildQ.data) return;
     if (TERMINAL.has(buildQ.data.status)) return;
