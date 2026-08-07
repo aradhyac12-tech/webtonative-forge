@@ -779,6 +779,9 @@ jobs:
           fi
           log "[sync] cap sync android completed"
 
+          PLUGINS_JSON="android/app/src/main/assets/capacitor.plugins.json"
+          CORE_MAJ="$(node -e "try{console.log(require('@capacitor/core/package.json').version.split('.')[0])}catch(e){console.log('')}" 2>/dev/null)"
+
 
           # ---------------------------------------------------------------
           # Plugin audit. Runs ONLY after cap sync. A package counts as a
