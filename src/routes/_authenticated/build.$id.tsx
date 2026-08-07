@@ -8,7 +8,7 @@ import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import { refreshBuildStatus, getArtifactUrl } from "@/lib/pipeline.functions";
+import { refreshBuildStatus, getArtifactUrl, retryBuild } from "@/lib/pipeline.functions";
 
 export const Route = createFileRoute("/_authenticated/build/$id")({
   component: BuildDetail,
