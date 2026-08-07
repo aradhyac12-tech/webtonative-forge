@@ -1352,6 +1352,48 @@ jobs:
           node /tmp/apkforge-native-check.cjs
           echo "PREBUILD_VALIDATION_PASSED" | tee -a "$REPORT"
 
+      - name: OAuth readiness validation
+        working-directory: project
+        run: |
+          set -e
+          log() { echo "$1" | tee -a "$REPORT"; }
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          SETTINGS="android/capacitor.settings.gradle"
+          PJ="android/app/src/main/assets/capacitor.plugins.json"
+          FATAL=""
+          check() {
+            # check <label> <condition-result> <fatal|warn>
+            if [ "$2" = "0" ]; then log "OAUTH_READY: $1"; else
+              if [ "$3" = "fatal" ]; then log "OAUTH_FAIL: $1"; FATAL="$FATAL; $1"; else log "OAUTH_WARN: $1"; fi
+            fi
+          }
+          has() { grep -qF "$1" "$2" 2>/dev/null; echo $?; }
+
+          OAUTH_SIGNAL=""
+          grep -rIlqE --exclude-dir=node_modules --exclude-dir=android --exclude-dir=ios "@supabase/supabase-js|firebase/auth|@auth0/|@clerk/|signInWithOAuth|oauth" . 2>/dev/null && OAUTH_SIGNAL=1
+
+          if [ -n "$OAUTH_SIGNAL" ]; then
+            check "@capacitor/browser registered in Gradle" "$(has '@capacitor/browser' "$SETTINGS")" fatal
+            check "@capacitor/app registered in Gradle" "$(has '@capacitor/app' "$SETTINGS")" fatal
+            check "BrowserPlugin present in capacitor.plugins.json" "$(has 'BrowserPlugin' "$PJ")" fatal
+            check "AppPlugin present in capacitor.plugins.json" "$(has 'AppPlugin' "$PJ")" warn
+          else
+            log "OAUTH_READY: no auth SDK detected — OAuth checks are advisory only"
+            check "@capacitor/app registered in Gradle" "$(has '@capacitor/app' "$SETTINGS")" warn
+          fi
+          check "custom-scheme intent filter present" "$(has 'android:scheme=' "$MANIFEST")" warn
+          check "app-link (https) intent filter present" "$(grep -c 'android:scheme="https"' "$MANIFEST" >/dev/null 2>&1 && grep -q 'android:scheme="https"' "$MANIFEST" && echo 0 || echo 1)" warn
+          check "launchMode=singleTask on MainActivity" "$(has 'android:launchMode="singleTask"' "$MANIFEST")" fatal
+          check "appUrlOpen bridge injected" "$(grep -rq 'appUrlOpen' android/app/src/main 2>/dev/null && echo 0 || echo 1)" warn
+
+          if [ -n "$FATAL" ]; then
+            echo "OAUTH_VALIDATION_FAILED:$FATAL" | tee -a "$REPORT"
+            echo "::error::OAuth readiness validation failed:$FATAL"
+            exit 1
+          fi
+          log "[oauth] OAuth readiness validated"
+
+
       - name: Inject Android lifecycle diagnostics
         working-directory: project
         run: |
