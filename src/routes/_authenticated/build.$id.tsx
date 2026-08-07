@@ -162,6 +162,11 @@ function BuildDetail() {
                 <RefreshCw className={`mr-1 h-3.5 w-3.5 ${refreshMut.isPending ? "animate-spin" : ""}`} /> Refresh
               </Button>
             )}
+            {b.status === "failed" && (
+              <Button variant="outline" size="sm" onClick={() => retryMut.mutate()} disabled={retryMut.isPending}>
+                <RefreshCw className={`mr-1 h-3.5 w-3.5 ${retryMut.isPending ? "animate-spin" : ""}`} /> Retry build
+              </Button>
+            )}
             {b.platform !== "ios" && b.repo && b.github_run_id && (
               <a
                 href={`https://github.com/${b.repo}/actions/runs/${b.github_run_id}`}
