@@ -448,7 +448,7 @@ export async function getFailureTail(
       let generic: { name: string; text: string } | null = null;
       for (const f of entries) {
         const text = await f.async("string");
-        if (/PREBUILD_VALIDATION_FAILED:|SIGNING_VALIDATION_FAILED:|APK_VERIFICATION_FAILED:|DEPENDENCY_VALIDATION_FAILED:/.test(text)) {
+        if (/PREBUILD_VALIDATION_FAILED:|SIGNING_VALIDATION_FAILED:|APK_VERIFICATION_FAILED:|DEPENDENCY_VALIDATION_FAILED:|OAUTH_VALIDATION_FAILED:/.test(text)) {
           marked = { name: f.name, text };
         }
         if (/BUILD FAILED|What went wrong|##\[error\]|Process completed with exit code [1-9]/i.test(text)) {
