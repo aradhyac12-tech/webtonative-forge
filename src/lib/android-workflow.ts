@@ -1550,8 +1550,16 @@ jobs:
           GRADLE_OPTS: "-Xmx2g -Dorg.gradle.jvmargs=-Xmx2g"
         run: |
           set -e
-          # Gradle wrapper preflight (toolchain verification, part 2).
-          [ -f ./gradlew ] || { echo "PREBUILD_VALIDATION_FAILED: DEPENDENCY_VALIDATION_FAILED: android/gradlew is missing from the generated native project." | tee -a "$REPORT"; exit 1; }
+          # Gradle wrapper preflight (toolchain verification, part 2) — repair first.
+          if [ ! -f ./gradlew ] || [ ! -f gradle/wrapper/gradle-wrapper.properties ] || [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "REPAIR: Gradle wrapper is incomplete — regenerating the native Android project" | tee -a "$REPORT"
+            cd ..
+            rm -rf android
+            npx cap add android >> "$REPORT" 2>&1 || true
+            npx cap sync android >> "$REPORT" 2>&1 || true
+            cd android
+          fi
+          [ -f ./gradlew ] || { echo "PREBUILD_VALIDATION_FAILED: DEPENDENCY_VALIDATION_FAILED: android/gradlew is missing and could not be regenerated." | tee -a "$REPORT"; exit 1; }
           [ -f gradle/wrapper/gradle-wrapper.properties ] || { echo "PREBUILD_VALIDATION_FAILED: DEPENDENCY_VALIDATION_FAILED: android/gradle/wrapper/gradle-wrapper.properties is missing, so no Gradle version is declared." | tee -a "$REPORT"; exit 1; }
           grep -n "distributionUrl" gradle/wrapper/gradle-wrapper.properties | tee -a "$REPORT"
           chmod +x ./gradlew
