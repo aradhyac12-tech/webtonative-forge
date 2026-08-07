@@ -1109,10 +1109,10 @@ jobs:
           chmod +x /tmp/apkforge-browser-trace.sh
           bash /tmp/apkforge-browser-trace.sh post-sync
 
-          # Auto-repair: if the trace shows the Browser plugin is not declared or
-          # not installed, install it at the core major, re-sync, and re-trace.
-          if grep -q "^BROWSER_TRACE_VERDICT: stage [12]" browser-plugin-trace.txt 2>/dev/null; then
-            echo "[browser-repair] Browser plugin missing at declaration/install stage — repairing"
+          # Auto-repair ladder: install at the core major, re-sync, then
+          # cap update, then a full native regeneration before giving up.
+          if grep -q "^BROWSER_TRACE_VERDICT: stage" browser-plugin-trace.txt 2>/dev/null; then
+            echo "[browser-repair] Browser plugin trace reported a gap — repairing"
             CORE_MAJ="$(node -e "try{console.log(require('@capacitor/core/package.json').version.split('.')[0])}catch(e){console.log('')}" 2>/dev/null)"
             if [ -n "$CORE_MAJ" ]; then
               npm i "@capacitor/browser@^$CORE_MAJ" --no-audit --no-fund || npm i @capacitor/browser --no-audit --no-fund || true
@@ -1123,6 +1123,20 @@ jobs:
             tail -n 40 /tmp/cap-sync-browser-repair.log || true
             mv browser-plugin-trace.txt browser-plugin-trace-before-repair.txt 2>/dev/null || true
             bash /tmp/apkforge-browser-trace.sh post-sync-repair
+            if ! grep -q "^BROWSER_TRACE_VERDICT: present end-to-end" browser-plugin-trace.txt 2>/dev/null; then
+              echo "[browser-repair] Still missing — running cap update android"
+              npx cap update android > /tmp/cap-update-browser-repair.log 2>&1 || true
+              npx cap sync android > /tmp/cap-sync-browser-repair-2.log 2>&1 || true
+              bash /tmp/apkforge-browser-trace.sh post-update-repair
+            fi
+            if ! grep -q "^BROWSER_TRACE_VERDICT: present end-to-end" browser-plugin-trace.txt 2>/dev/null; then
+              echo "[browser-repair] Still missing — regenerating the native Android project"
+              rm -rf android
+              npx cap add android > /tmp/cap-add-browser-repair.log 2>&1 || true
+              npx cap sync android > /tmp/cap-sync-browser-repair-3.log 2>&1 || true
+              bash /tmp/apkforge-browser-trace.sh post-regenerate-repair
+            fi
+
             if grep -q "^BROWSER_TRACE_VERDICT: present end-to-end" browser-plugin-trace.txt 2>/dev/null; then
               echo "BROWSER_TRACE_VERDICT: repaired (Browser plugin installed and registered during the build)" | tee -a "$REPORT"
             else
